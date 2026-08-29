@@ -20,6 +20,13 @@ Prompt'ning 5-bo'limidagi sxemadan **ataylab chetlashish** — owner tomonidan a
 | D6 | **Pepper `.env` da emas** | Kalitlar alohida, huquqi cheklangan faylda turadi. | `ENCRYPTION_KEY` va `WEBHOOK_SECRET_PEPPER` — `secrets.env` (chmod 600), Docker `env_file` orqali. `.env` da faqat maxfiy bo'lmagan sozlamalar. |
 | D7 | **Infra Docker'da, ilova dev'da native** | Versiya pariteti: prod'da PG16 bo'lsa dev'da ham PG16. `docker compose down -v` bilan bir zumda toza boshlash. Docker ichida hot-reload sekin va volume mount muammolari vaqt yeydi. | `postgres`, `redis`, **`minio`** — Docker'da birinchi kundan. `api`/`worker`/`web` — dev'da `pnpm dev`, prod'da Docker. |
 | D8 | **Object storage = MinIO** | (Q15 javobi) Excel export va boshqa generatsiya qilingan fayllar uchun. | Prod'da S3-mos, dev'da MinIO konteyner. |
+| D9 | **Domen `safo.niskandarov.uz`. Dev'da webhook — cloudflared *named* tunnel** (quick tunnel emas, u barqaror hostname beradi) | `dev.<domen>` ni hozir serverga yo'naltirish DNS/TLS va "har o'zgarishda deploy" muammolarini foydasiz keltiradi. Tunnel URL'ining o'zgaruvchanligi esa bizni to'g'ri arxitekturaga majbur qiladi. | `WEBHOOK_BASE_URL` env'dan olinadi; `webhook.healthcheck` (boot + cron) har faol bot uchun `getWebhookInfo().url` ni kutilgan URL bilan solishtiradi, farq bo'lsa `setWebhook` qayta chaqiriladi. **Bu prod'da ham kerak** — webhook o'chib qolishi real hodisa. |
+| D10 | **`dev.safo.niskandarov.uz` serverda — faqat Phase 6 da** | Click/Payme callback URL merchant kabinetida ro'yxatdan o'tadi va ko'pincha IP whitelist talab qiladi — tunnel u yerda ishlamaydi. | Domen sotib olinib DNS tayyorlanadi, lekin dev unga bog'lanmaydi. |
+| D11 | **Trial: 7 kun. Payments — ochiq. Broadcast — ochiq, lekin qattiq cheklangan** | Pul tenantga tushadi (platformaga emas), va aynan birinchi haqiqiy buyurtma odamni to'lovchiga aylantiradi — buni trial ortiga yashirish konversiyani o'ldiradi. Broadcast esa asosiy suiiste'mol yo'li: bepul akkaunt + ommaviy xabar = spam, javobgarlik platforma IP va domeniga tushadi. | Trial'da: `broadcastDailyLimit: 3`, `broadcastRatePerSec: 10`, akkaunt yoshi < 1 soat bo'lsa broadcast umuman ishlamaydi. Yopiq: `api`, `sms`, `prioritySupport`, ikkinchi bot. **`export` ochiq** — odam o'z ma'lumotini olib chiqa olmasa ishonmaydi. |
+| D12 | **Trial firibgarligiga qarshi ikki chora** | Kimdir trial bot bilan pul yig'ib g'oyib bo'lishi mumkin. | (a) Merchant kalit kiritish uchun `emailVerifiedAt IS NOT NULL` **yoki** `telegramId IS NOT NULL` shart → `Owner.emailVerifiedAt` maydoni qo'shildi. (b) Har bot uchun birinchi 10 buyurtma `AuditLog` ga yoziladi. |
+| D13 | **Limitlar kodda emas, `Plan.features` + config'da** | Birinchi oyda ikki-uch marta o'zgaradi. | Rate limiter tezligi ham plandan o'qiladi (`broadcastRatePerSec`), hardcode 25 emas. Prompt 4.3 dagi 25 msg/s — **shift emas, tom** (Telegram limiti). |
+| D14 | **Pul DB'da UZS butun sonda** | Payme API tiyin talab qiladi; konvertatsiya bitta joyda bo'lmasa 100x xato — real pul yo'qotish. | `Plan.priceUzs Int`, `Invoice.amountUzs Int`, `InvoiceItem.amountUzs Int`, `PaymentTransaction.amountUzs Int`. **Tiyinga o'tkazish faqat provayder chegarasida** (`packages/payments/amounts.ts`, `uzsToTiyin = amount * 100`). DB'da hech qachon tiyin yo'q. |
+| D15 | **`Plan` ga `intervalDays` va `isArchived`** | Yillik tarif qo'shilganda migratsiya qilmaslik uchun; narx oshganda eski mijoz eski tarifda qolishi uchun. | `intervalDays Int @default(30)`, `isArchived Boolean @default(false)`. `maxBots` **hozircha doim 1** (billing botga bog'langan) — maydon kelajakdagi "akkaunt tarifi" uchun turadi. |
 
 **Kelajak (hozir qurilmaydi):** agentliklar uchun "hisob tarifi" (N bot bitta narxda) kerak bo'lsa — `Subscription` ga `scope Enum('bot','account')` va nullable `ownerId` qo'shish yetarli. Hozirgi sxema buni buzmaydi, shuning uchun oldindan qurilmaydi.
 
@@ -131,6 +138,7 @@ model Owner {
   status        String   @default("active")   // active | suspended | deleted
   lastLoginAt   DateTime?
   trialUsedAt   DateTime?                     // D2: trial akkauntga bog'liq — bir marta
+  emailVerifiedAt DateTime?                   // D12: merchant kalit kiritish sharti
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -269,17 +277,21 @@ model AuditLog {
 // ---------- Billing ----------
 model Plan {
   id           String  @id @default(uuid())
-  code         String  @unique
+  code         String  @unique              // trial | std_500 | ... | biz_pro
   name         String
-  monthlyPrice Decimal @db.Decimal(12,2)
-  currency     String  @default("UZS")
+  group        String                       // trial | standard | business
+  priceUzs     Int                          // D14: butun UZS, hech qachon tiyin emas
+  intervalDays Int     @default(30)         // D15: yillik tarif uchun oldindan
   maxBotUsers  Int
-  maxBots      Int     @default(1)
-  features     Json
+  maxBots      Int     @default(1)          // D15: hozircha doim 1
+  features     Json                         // D13: barcha limitlar shu yerda
+  sortOrder    Int     @default(0)
   isActive     Boolean @default(true)
+  isArchived   Boolean @default(false)      // D15: narx oshsa eski mijoz eski tarifda qoladi
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   subscriptions Subscription[]
+  @@index([isActive, isArchived, sortOrder])
 }
 
 model Subscription {
@@ -309,8 +321,8 @@ model Invoice {
   // D3: subscriptionId olib tashlandi — bitta invoice bir nechta obunani qoplaydi
   ownerId        String
   owner          Owner    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  amount         Decimal  @db.Decimal(12,2)
-  currency       String   @default("UZS")
+  amountUzs      Int                       // D14: butun UZS
+  currency       String   @default("UZS")   // hujjat sifatida saqlanadi
   status         String                    // pending | paid | canceled | failed
   provider       String?                   // click | payme | manual
   providerTxnId  String?
@@ -330,7 +342,7 @@ model InvoiceItem {              // D3: owner SQL'idagi payment_items
   invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   subscriptionId String
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  amount         Decimal  @db.Decimal(12,2)   // UZS
+  amountUzs      Int                          // D14: butun UZS
   periodStart    DateTime                     // qaysi davr uchun to'lanmoqda
   periodEnd      DateTime
   createdAt      DateTime @default(now())
@@ -346,7 +358,7 @@ model PaymentTransaction {
   provider      String                     // click | payme
   providerTxnId String
   state         Int
-  amount        Decimal  @db.Decimal(14,2)
+  amountUzs     Int                            // D14: UZS'ga o'tkazilgan; tiyin faqat rawRequest ichida
   rawRequest    Json
   performedAt   DateTime?
   canceledAt    DateTime?
@@ -570,6 +582,50 @@ model SurveyResponse {
 
 ---
 
+## 3.1 Seed: tariflar (`packages/db/seed/plans.ts`)
+
+Owner bergan ro'yxat. Narxlar **boshlang'ich nuqta, dogma emas** — `isArchived` shuning uchun bor (D15).
+
+| code | name | group | priceUzs | days | maxBotUsers | sort |
+|---|---|---|---|---|---|---|
+| `trial` | Sinov | trial | 0 | 7 | 100 | 0 |
+| `std_500` | Start | standard | 15 000 | 30 | 500 | 10 |
+| `std_2k` | O'sish | standard | 39 000 | 30 | 2 000 | 20 |
+| `std_5k` | Pro | standard | 79 000 | 30 | 5 000 | 30 |
+| `std_15k` | Pro 15K | standard | 149 000 | 30 | 15 000 | 40 |
+| `std_50k` | Pro 50K | standard | 299 000 | 30 | 50 000 | 50 |
+| `biz_start` | Biznes Start | business | 199 000 | 30 | 3 000 | 60 |
+| `biz_pro` | Biznes Pro | business | 399 000 | 30 | 10 000 | 70 |
+
+`features` (JSON) — to'liq qiymatlar:
+
+| feature | trial | std_500 | std_2k | std_5k | std_15k | std_50k | biz_start | biz_pro |
+|---|---|---|---|---|---|---|---|---|
+| `broadcast` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `broadcastDailyLimit` | 3 | 5 | 10 | 20 | 30 | 50 | 10 | 30 |
+| `broadcastRatePerSec` | 10 | 25 | 25 | 25 | 25 | 25 | 25 | 25 |
+| `payments` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| `orders` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| `ordersMonthlyLimit` | — | — | — | — | — | — | 500 | 3 000 |
+| `export` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `forcedSubscription` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `referral` | — | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| `premiumContent` | — | — | ✅ | ✅ | ✅ | ✅ | — | — |
+| `staffSeats` | 1 | 1 | 2 | 3 | 5 | 10 | 3 | 10 |
+| `api` | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ |
+| `sms` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| `prioritySupport` | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+**Narx shakli haqida (owner izohi):** standart guruhda foydalanuvchi boshiga narx pog'onama-pog'ona arzonlashadi (30 so'm → 6 so'm) — bu to'g'ri shakl. Biznes guruhi qimmatroq, chunki u yerda bot pul ishlab beradi va qo'llab-quvvatlash og'irroq (buyurtma, to'lov, oshxona).
+
+**`ordersMonthlyLimit` xatti-harakati:** limitga yetganda **bot to'xtatilmaydi** — egaga ogohlantirish yuboriladi va tarifni oshirish taklif qilinadi. (Bu 10.5 dagi `maxBotUsers` mantiqiga mos.)
+
+**Trial berish qoidasi (D2+D11):** yangi bot yaratishda trial faqat `Owner.trialUsedAt IS NULL` bo'lsa beriladi, va o'sha zahoti `trialUsedAt = now()` yoziladi. Ikkinchi bot uchun trial yo'q — darhol to'lovli tarif tanlanadi.
+
+**Trial broadcast qoidasi:** `Owner.createdAt + 1 soat > now()` bo'lsa broadcast rad etiladi (D11).
+
+---
+
 ## 4. Asosiy texnik qarorlar (Phase 1 uchun aniqlashtirilgan)
 
 | Mavzu | Qaror |
@@ -579,7 +635,10 @@ model SurveyResponse {
 | Webhook javobi | Har doim `200`, faqat secret/route noto'g'ri bo'lsa `401`. Og'ir ish → BullMQ. |
 | Registry cache | `Map<botId, entry>` + TTL 15 daq + Redis pub/sub `botplatform:bot:invalidate` (route keshi ham shu signalda tozalanadi). |
 | Rate limit | Redis Lua token bucket: global 25/s, chat 1/s, guruh 20/min. |
-| Queue nomlari | `broadcast.send`, `stats.rollup`, `billing.tick`, `export.excel`, `cleanup.purge`. |
+| Queue nomlari | `broadcast.send`, `stats.rollup`, `billing.tick`, `export.excel`, `cleanup.purge`, `webhook.healthcheck` (D9). |
+| Webhook drift | `WEBHOOK_BASE_URL` env; boot'da va har 15 daqiqada `getWebhookInfo().url` tekshiriladi, farq bo'lsa `setWebhook` qayta chaqiriladi. Dev (tunnel) va prod uchun bir xil kod (D9). |
+| Rate limit manbasi | Tezlik `Plan.features.broadcastRatePerSec` dan o'qiladi; Telegram'ning 25 msg/s chegarasi — **tom**, undan oshib bo'lmaydi (D13). |
+| Pul birligi | DB'da butun UZS. Tiyinga o'tkazish faqat `packages/payments/amounts.ts` ichida (D14). |
 | Idempotentlik | To'lov: `(provider, providerTxnId)` unique. Cron: holat-mashinasi (o'tgan holatni qayta yozmaydi). |
 | Crypto | **Token** — AES-256-GCM (qaytarib olinadi), `keyVersion` bilan ko'p kalit. **Secretlar** — HMAC-SHA256 + pepper (qaytarib olinmaydi). Ikkalasi ham `secrets.env` (chmod 600) dan o'qiladi, `.env` dan emas (D4/D6). |
 | Object storage | MinIO (dev, Docker) / S3-mos (prod). Export fayllari — `exports/{botId}/{jobId}.xlsx`, presigned URL (D8). |
@@ -594,9 +653,9 @@ model SurveyResponse {
 Prompt 0.3-qoidasi bo'yicha taxmin qilmayman. Quyidagilar sxemaga yoki biznes-mantiqqa ta'sir qiladi:
 
 1. ~~**Obuna qamrovi.**~~ ✅ **HAL QILINDI (D1–D3):** har bot alohida to'laydi; trial akkauntga bog'lanadi (`Owner.trialUsedAt`); bitta invoice `InvoiceItem` orqali bir nechta obunani qoplaydi. → `Plan.maxBots` endi "bitta owner nechta bot yaratishi mumkin" limitidir (obuna qamrovi emas).
-2. **Trial shartlari.** Trial necha kun? Har bot uchunmi yoki har owner uchun bir marta? Trial'da qaysi feature'lar yopiq (broadcast? payments?)?
-3. **Tariflar ro'yxati.** Seed uchun aniq raqamlar kerak: kod, nom, oylik narx (UZS), `maxBotUsers`, `maxBots`, `features`. Prompt'da faqat kod namunalari bor (`standard_300`, `standard_1000`).
-4. **Domen va TLS.** ⚠️ **PHASE 1 BLOKERI** — owner "buni Phase 0 da hal qiling" dedi, lekin aniq domen hali berilmagan. Yondashuv tanlandi (dev subdomen yoki cloudflared), kerak bo'lgani: (a) prod domen nomi, (b) dev subdomen (`dev.<domen>`) shu serverga yo'naltirilganmi yoki cloudflared tunnel bilan boshlaymizmi, (c) `api.` subdomeni ishlatiladimi yoki bitta domen ostida yo'l bo'yicha ajratamizmi.
+2. ~~**Trial shartlari.**~~ ✅ **HAL QILINDI (D11–D12):** 7 kun, akkauntga bir marta; payments va export ochiq; broadcast ochiq lekin 3/kun + 10 msg/s + akkaunt yoshi ≥ 1 soat; api/sms/prioritySupport/ikkinchi bot yopiq.
+3. ~~**Tariflar ro'yxati.**~~ ✅ **HAL QILINDI:** 8 ta tarif — §3.1 jadvaliga qarang. Prompt'dagi `standard_300/1000` kodlari ishlatilmaydi.
+4. ~~**Domen va TLS.**~~ ✅ **HAL QILINDI (D9–D10):** prod domen `safo.niskandarov.uz`; dev'da cloudflared **named** tunnel; `dev.` subdomen serverga faqat Phase 6 da (merchant callback + IP whitelist).
 5. **Platforma merchant hisobi.** Click/Payme test (sandbox) kalitlari bormi? Yo'q bo'lsa Phase 5 to'lovlarini faqat mock bilan test qilamiz — bu qabul mezoniga ta'sir qiladi.
 6. **Google OAuth va SMTP.** Phase 2 uchun Google Client ID/Secret va SMTP mavjudmi? Yo'q bo'lsa Phase 2'da faqat email+parol va Telegram Login qilib, Google'ni keyinga qoldiramizmi?
 7. **Bot adminlari.** `Bot.adminIds BigInt[]` — massiv oddiy, lekin "kim qo'shdi/qachon/qaysi huquq bilan" saqlanmaydi. Rollar (masalan faqat-o'qish admin) kerakmi? Kerak bo'lsa `BotAdmin` jadvali kerak bo'ladi.
@@ -606,11 +665,15 @@ Prompt 0.3-qoidasi bo'yicha taxmin qilmayman. Quyidagilar sxemaga yoki biznes-ma
 11. **Broadcast unsubscribe.** 19-bo'lim "obunani bekor qilish imkoni" talab qiladi. Bu `/stop` buyrug'imi, har xabar ostidagi tugmami, yoki ikkalasi? Unsubscribe holati `BotUser.status` ichidami yoki alohida maydonmi (hozirgi enum'da bunday qiymat yo'q)?
 12. **Kino: avtomatik o'chirish.** 8.2 "ixtiyoriy" deydi — MVP'ga kiritamizmi? Kiritsak, standart necha daqiqa?
 13. **Do'kon: yetkazib berish narxi.** `Order` sxemasida `deliveryFee` yo'q, faqat `total`. Yetkazish puli kerakmi? Kerak bo'lsa `total` ichiga kiradimi yoki alohida maydonmi?
-14. **Valyuta.** Hamma joyda UZS deb qat'iy hisoblaymizmi (Payme tiyin konvertatsiyasi shunga bog'liq), yoki tenant boshqa valyuta tanlashi mumkinmi?
+14. ~~**Valyuta.**~~ ✅ **QISMAN HAL QILINDI (D14):** platforma billing'i — butun UZS, tiyin faqat provayder chegarasida. **Qoldi:** tenant savdosi (`Product.price`, `Order.total`, `DailyStat.revenue`) hozir `Decimal(12,2)` (prompt 5-bo'limi bo'yicha). Uni ham butun UZS `Int` ga o'tkazamizmi? Tavsiyam: **ha** — bitta pul turi butun loyihada, tiyin/kopeyka chalkashligi umuman qolmaydi.
 15. ~~**Excel export saqlanishi.**~~ ✅ **QISMAN HAL QILINDI (D8):** MinIO / S3-mos storage. **Qoldi:** presigned havola muddati qancha (taklifim: 1 soat, faqat panel sessiyasi orqali olinadi)?
 16. **Ma'lumot saqlash muddati.** `BotEvent` tez o'sadi. Retention qancha (masalan 90 kun, keyin faqat `DailyStat` qoladi)? Partitioning kerakmi?
 
-> **Blokerlar:** 1, 2, 3 — Phase 5'gacha kutishi mumkin, lekin 1-savol **Phase 1 sxemasiga** ta'sir qiladi, shuning uchun Phase 1 boshlanishidan oldin javob kerak. 8-savol ham Phase 1 sxemasiga tegishli. Qolganlari o'z Phase'igacha kutadi.
+17. **`staffSeats` → `BotMember` jadvali.** Tariflar 1–10 ta "staff seat" sotadi, ya'ni bitta botga bir nechta panel foydalanuvchisi. Hozirgi sxemada bot faqat bitta `ownerId` ga tegishli. Kerak bo'ladigan narsa: `BotMember(botId, ownerId, role, invitedBy)` + taklifnoma oqimi. **Tavsiyam:** hozir qurilmaydi (Phase 4/5 da), lekin `staffSeats` sotilayotgani uchun rejaga yozib qo'yildi — bu 7-savol (bot adminlari) bilan bitta ish. Roziligingiz kerak: keyinga qoldiramizmi?
+18. **QQS.** Narxlar QQS bilanmi yoki usiz? Landing va oferta'da aniq yozilishi kerak, keyin o'zgartirish noqulay. (Owner: buxgalter bilan hal qilinadi.) Sxemaga ta'siri: kerak bo'lsa `Plan.vatIncluded Boolean` va `Invoice.vatAmountUzs` — hozir qo'shilmadi.
+19. **`ordersMonthlyLimit` hisobi.** Oylik buyurtma soni qayerdan sanaladi — `DailyStat.orders` agregatidanmi yoki `Order` bo'yicha to'g'ridan-to'g'ri `count`? Tavsiyam: `DailyStat` (arzon), chegaraga yaqinlashganda aniq `count` bilan tekshirish.
+
+> **Phase 1 blokerlari qolmadi.** 17 va 18 — keyingi Phase'lar uchun; 14 (tenant pul turi) sxemaga tegadi, lekin `Product`/`Order` Phase 4 da yaratiladi, shuning uchun Phase 1 ni bloklamaydi. Qolganlari o'z Phase'igacha kutadi.
 
 ---
 
@@ -635,6 +698,9 @@ Prompt 0.3-qoidasi bo'yicha taxmin qilmayman. Quyidagilar sxemaga yoki biznes-ma
 | R15 | **Dev'da webhook uchun HTTPS yo'q** | Phase 3 qabul mezoni ("haqiqiy token bilan `/start`") sinovdan o'tmaydi | Yondashuv tanlandi: `dev.<domen>` serverga yo'naltiriladi yoki cloudflared tunnel (ngrok'dan barqarorroq). **Domen hali berilmagan — 4-savol, Phase 1 blokeri** |
 | R17 | **Route hash yo'qolsa bot "yo'qoladi"** — HMAC qaytarib olinmaydi, faqat hash saqlanadi | Webhook URL'ni qayta tiklab bo'lmaydi | Bu qasddan: yo'qolsa yangi random generatsiya qilinib `setWebhook` qayta chaqiriladi (D4 mantiqi). `POST /api/bots/:id/webhook/rotate` endpoint'i Phase 3 da |
 | R18 | **Pepper almashtirilsa barcha route hash'lari yaroqsiz bo'ladi** | Barcha botlar webhook'ni qabul qilmay qoladi | Pepper rotatsiyasi = barcha botlar uchun ommaviy `setWebhook` qayta chaqirish. RUNBOOK'da alohida protsedura; pepper backup'i kalit backup'i bilan bir xil darajada muhim |
+| R20 | **Trial suiiste'moli — spam** | Platforma IP/domeni Telegram'da qora ro'yxatga tushishi | D11 cheklovlari (3/kun, 10 msg/s, akkaunt yoshi ≥ 1 soat) + 19-bo'lim: broadcast faqat `/start` bosganlarga, unsubscribe bilan. Bir nechta trial akkaunt ochilishi `Owner.trialUsedAt` bilan cheklanadi, lekin yangi email bilan aylanib o'tish mumkin — kerak bo'lsa telefon tasdig'i qo'shiladi |
+| R21 | **Tunnel URL o'zgarishi** (dev, ba'zan prod restart) | Botlar update qabul qilmay qoladi, jimgina | D9: `webhook.healthcheck` job — boot'da va har 15 daq. Bu dev qulayligi uchun emas, prod talabi |
+| R22 | **Merchant kalit trial akkauntda** | Firibgar pul yig'ib g'oyib bo'lishi, shikoyat platformaga tushishi | D12: `emailVerifiedAt` yoki `telegramId` sharti + birinchi 10 buyurtma `AuditLog` da |
 | R19 | **`InvoiceItem` bilan qisman to'lov** (5 obunadan 3 tasi to'landi) | Noto'g'ri obuna aktivlashishi | Invoice atomik: yo hammasi `paid`, yo hech biri. Provayder callback'ida barcha `items` bitta tranzaksiyada yangilanadi |
 | R16 | **`BotEvent` o'sishi** | DB shishadi, panel sekinlashadi | Panel faqat `DailyStat` dan o'qiydi; retention siyosati (16-savol) |
 
@@ -651,6 +717,10 @@ Prompt 0.3-qoidasi bo'yicha taxmin qilmayman. Quyidagilar sxemaga yoki biznes-ma
 | Redis | ➡️ Docker | D7. |
 | MinIO | ➡️ Docker | D8. |
 | Git | ✅ 2.54.0 | ✅ Init qilindi, `main` branch, `origin` = `github.com/NodirbekIskandarov/safo-bot_clone`. |
+| Domen | ✅ `safo.niskandarov.uz` | Prod. Dev — cloudflared named tunnel (D9). |
+| cloudflared | ❌ topilmadi | Phase 3 da kerak (`brew install cloudflared`). Phase 1–2 ni bloklamaydi. |
+
+> Server IP va parol repo'ga **yozilmaydi** — ular faqat serverdagi `secrets.env` (chmod 600) va deploy muhitida turadi.
 
 ---
 
@@ -662,7 +732,7 @@ Branch: `phase/01-foundation`. Ketma-ketlik (har biri alohida commit):
 2. `chore: dev infra` — `infra/docker-compose.dev.yml`: postgres**:16**, redis:7, minio (D7/D8). Faqat infra — ilova native.
 3. `feat(db): prisma schema + migration` — §3 dagi sxema (D1–D5 bilan), `pnpm db:migrate`.
 4. `feat(db): raw migration` — `pg_trgm` extension + `Movie.title` GIN trgm indeks.
-5. `feat(db): seed` — planlar (**3-savol javobi kerak**), demo owner.
+5. `feat(db): seed` — §3.1 dagi 8 ta tarif + demo owner.
 6. `feat(core): crypto` — AES-256-GCM + `keyVersion` (token) **va** `hmacSecret()` (webhook secret/pepper, D4) + unit testlar.
 7. `feat(core): tenantGuard + errors` + unit testlar (boshqa owner ma'lumotiga kirish doim throw).
 8. `feat(api): fastify skeleton` — helmet, cookie, rate-limit, pino (redact: token/password/secret/authorization), requestId, `/health`, `/ready`, xato konverti.
@@ -673,16 +743,14 @@ Branch: `phase/01-foundation`. Ketma-ketlik (har biri alohida commit):
 
 ---
 
-## 9. Tasdiq so'rovi
+## 9. Phase 0 yakuni
 
-✅ Hal qilindi: obuna modeli (D1–D3), webhook secret (D4–D6), infra (D7–D8), `git init` + `origin`.
+✅ **Barcha Phase 1 blokerlari hal qilindi:** obuna modeli (D1–D3), webhook secret (D4–D6), infra (D7–D8), domen va dev webhook (D9–D10), trial (D11–D12), limitlar (D13), pul birligi (D14), tarif sxemasi (D15) va seed ro'yxati (§3.1). Git init + `origin` bajarildi.
 
-⚠️ **Phase 1 boshlanishidan oldin hali kerak:**
+⚠️ **Phase 1 boshlanishidan oldin bitta muhit ishi qolgan:**
 
-1. **Domen** (4-savol) — prod domen nomi va dev'da webhook qanday keladi: `dev.<domen>` serverga yo'naltiriladimi yoki cloudflared tunnel? Bu Phase 3 gacha kod yozishga xalal bermaydi, lekin owner "Phase 0 da hal qiling" dedi.
-2. **Trial muddati** (2-savol) — necha kun? Trial'da qaysi feature'lar ochiq (broadcast? payments?)? Seed va `billing.tick` shunga bog'liq.
-3. **Tariflar** (3-savol) — seed uchun aniq ro'yxat: `code`, nom, oylik narx (UZS), `maxBotUsers`, `maxBots`, `features`.
+- **Docker** va **pnpm** o'rnatilishi kerak (§7). `corepack enable pnpm` — o'zim qila olaman; Docker Desktop o'rnatish sizning ruxsatingizni talab qiladi (`brew install --cask docker`).
 
-> 2 va 3 faqat **Phase 1 ning 5-commit'iga** (seed) to'siq. 1–4 va 6–10 commitlar ularsiz ham boshlanaveradi.
+**Keyingi qadam:** `phase/01-foundation` branch, §8 dagi 10 ta commit.
 
-Qolgan savollar (5, 6, 7, 9–14, 16) o'z Phase'igacha kutadi va hozir bloklamaydi.
+**Kelajakka yozib qo'yilgan, hozir qurilmaydi:** `BotMember`/staff seats (17-savol), QQS maydonlari (18-savol), `Subscription.scope` = akkaunt tarifi, Phase 7 shablon jadvallari.
