@@ -61,6 +61,10 @@ model Bot {
   products     Product[]
   orders       Order[]
   surveys      Survey[]
+  tickets      Ticket[]
+  contests     Contest[]
+  faqItems     FaqItem[]
+  bookings     Booking[]
   subscription Subscription?
 
   @@index([ownerId, status])
@@ -83,6 +87,9 @@ model BotUser {
   orders           Order[]
   surveyResponses  SurveyResponse[]
   events           BotEvent[]
+  tickets          Ticket[]
+  contestEntries   ContestEntry[]
+  bookings         Booking[]
 
   @@unique([botId, tgUserId])
   @@index([botId, joinedAt])
@@ -351,4 +358,108 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([action, createdAt])
+}
+
+
+// ---------------------------------------------------------------- support
+
+model Ticket {
+  id         String   @id @default(uuid())
+  botId      String
+  bot        Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  botUserId  String
+  botUser    BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  number     Int
+  status     String   @default("open")    // open | answered | closed
+  lastMsgAt  DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  messages   TicketMessage[]
+
+  @@unique([botId, number])
+  @@index([botId, status])
+}
+
+model TicketMessage {
+  id        String   @id @default(uuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  fromAdmin Boolean  @default(false)
+  text      String?
+  fileId    String?
+  fileType  String?
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+// ---------------------------------------------------------------- contest
+
+model Contest {
+  id           String   @id @default(uuid())
+  botId        String
+  bot          Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  title        String
+  prize        String?
+  winnerCount  Int      @default(1)
+  requireSub   Boolean  @default(true)   // must be subscribed to the required channels
+  status       String   @default("open") // open | finished
+  finishedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  entries      ContestEntry[]
+
+  @@index([botId, status])
+}
+
+model ContestEntry {
+  id         String   @id @default(uuid())
+  contestId  String
+  contest    Contest  @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  botUserId  String
+  botUser    BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  ticketNo   Int
+  isWinner   Boolean  @default(false)
+  invitedBy  String?                     // referral chain for "invite friends" tasks
+  createdAt  DateTime @default(now())
+
+  @@unique([contestId, botUserId])
+  @@index([contestId, isWinner])
+}
+
+// -------------------------------------------------------------------- faq
+
+model FaqItem {
+  id        String   @id @default(uuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  question  String
+  answer    String
+  keywords  String   @default("")        // space separated, matched case-insensitively
+  hits      Int      @default(0)
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([botId, sortOrder])
+}
+
+// ---------------------------------------------------------------- booking
+
+model Booking {
+  id         String   @id @default(uuid())
+  botId      String
+  bot        Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  botUserId  String
+  botUser    BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  number     Int
+  service    String
+  slotAt     DateTime
+  phone      String
+  comment    String?
+  status     String   @default("new")     // new | confirmed | done | canceled
+  createdAt  DateTime @default(now())
+
+  @@unique([botId, number])
+  @@index([botId, slotAt])
 }

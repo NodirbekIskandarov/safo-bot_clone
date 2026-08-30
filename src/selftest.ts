@@ -38,7 +38,7 @@ try {
 check("buzilgan shifrmatn rad etiladi (GCM auth)", tampered);
 
 console.log("\n🧩 Shablonlar");
-check("4 ta shablon ro'yxatda", templateList.length === 4, `topildi: ${templateList.length}`);
+check("8 ta shablon ro'yxatda", templateList.length === 8, `topildi: ${templateList.length}`);
 for (const t of templateList) {
   check(`${t.emoji} ${t.name} (${t.key})`, templates[t.key] === t);
 }
@@ -112,13 +112,13 @@ console.log("\n💳 Billing");
 try {
   await seedPlans();
   const plans = await db.plan.findMany();
-  check("8 ta tarif seed qilindi", plans.length === 8, `topildi: ${plans.length}`);
+  check("9 ta tarif seed qilindi", plans.length === 9, `topildi: ${plans.length}`);
   check("narxlar butun UZS", plans.every((p) => Number.isInteger(p.priceUzs)));
 
   const shopPlans = await payablePlans("shop");
   const kinoPlans = await payablePlans("kino");
-  check("do'kon boti faqat biznes tarifda", shopPlans.every((p) => p.group === "business"), `${shopPlans.length} ta`);
-  check("kino boti barcha pullik tarifda", kinoPlans.length === 7, `${kinoPlans.length} ta`);
+  check("do'kon boti faqat biznes tarifda", shopPlans.length === 3 && shopPlans.every((p) => p.group === "business"), `${shopPlans.length} ta`);
+  check("kino boti barcha pullik tarifda", kinoPlans.length === 8, `${kinoPlans.length} ta`);
 
   const owner = await db.owner.create({ data: { tgUserId: BigInt(Date.now() + 7), fullName: "billing-test" } });
   const mk = async (n: number) =>

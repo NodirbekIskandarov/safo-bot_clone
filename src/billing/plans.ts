@@ -47,6 +47,11 @@ export const PLAN_SEED = [
     features: { broadcast: true, broadcastDailyLimit: 50, broadcastRatePerSec: 20, orders: false, export: true, forcedSubscription: true },
   },
   {
+    code: "biz_mini", name: "Biznes Mini", group: "business", priceUzs: 99_000, intervalDays: 30,
+    maxBotUsers: 1_000, sortOrder: 55,
+    features: { broadcast: true, broadcastDailyLimit: 5, broadcastRatePerSec: 20, orders: true, export: true, forcedSubscription: true },
+  },
+  {
     code: "biz_start", name: "Biznes Start", group: "business", priceUzs: 199_000, intervalDays: 30,
     maxBotUsers: 3_000, sortOrder: 60,
     features: { broadcast: true, broadcastDailyLimit: 10, broadcastRatePerSec: 20, orders: true, export: true, forcedSubscription: true },

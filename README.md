@@ -58,12 +58,16 @@ Platforma botingizni oching va `/start` bosing.
 
 ## Shablonlar
 
-| | Shablon | Nima qiladi |
-|---|---|---|
-| 🎬 | **Kino** | Foydalanuvchi kod yuboradi → kino keladi. Majburiy obuna, ko'rishlar hisobi |
-| 🛒 | **Do'kon** | Katalog → savat → buyurtma. Adminga xabar + bir tugmada tasdiqlash |
-| 📢 | **Reklama** | Obunachilar yig'adi, hammasiga bir tugmada xabar yuboradi |
-| 📋 | **Anketa** | Bosqichma-bosqich savollar, javoblarni CSV qilib yuklab olish |
+| | Shablon | Nima qiladi | Tarif |
+|---|---|---|---|
+| 🎬 | **Kino** | Kod yuboradi → kino keladi. Majburiy obuna, ko'rishlar hisobi | har qanday |
+| 🛒 | **Do'kon** | Katalog → savat → buyurtma. Bir tugmada tasdiqlash | biznes |
+| 📢 | **Reklama** | Obunachilar yig'adi, hammasiga xabar yuboradi | har qanday |
+| 📅 | **Navbat** | Sartaroshxona/klinika: xizmat → kun → soat. Band vaqtlar ko'rinmaydi | har qanday |
+| 💬 | **Aloqa** | Mijoz yozadi → sizga keladi → javobingiz qaytadi. Tiket raqami bilan | har qanday |
+| 🎁 | **Konkurs** | Bilet raqami, majburiy obuna, `crypto.randomInt` bilan g'olib | har qanday |
+| 🤖 | **Savol-javob** | Kalit so'z bo'yicha avtomatik javob beradi | har qanday |
+| 📋 | **Anketa** | Bosqichma-bosqich savollar, javoblarni CSV qilib yuklab olish | har qanday |
 
 Yangi shablon qo'shish: `src/templates/<nom>/index.ts` yarating va
 `src/templates/index.ts` ga bitta qator qo'shing. Yadro kodiga tegilmaydi.
@@ -134,8 +138,12 @@ muddat tugaganda, bot to'xtaganda. Cron **idempotent** — ikki marta ishlasa ha
 | `std_5k` | 79 000 | 5 000 | ❌ |
 | `std_15k` | 149 000 | 15 000 | ❌ |
 | `std_50k` | 299 000 | 50 000 | ❌ |
+| `biz_mini` | 99 000 | 1 000 | ✅ |
 | `biz_start` | 199 000 | 3 000 | ✅ |
 | `biz_pro` | 399 000 | 10 000 | ✅ |
+
+Muddat tanlanadi: **1 oy** · **3 oy (−10%)** · **12 oy (−20%)**. Uzoq muddat naqd pulni oldindan
+keltiradi va churn'ni kamaytiradi.
 
 Narxlar `src/billing/plans.ts` da. **Narx o'zgartirilsa eski mijozlar eski narxda qoladi** —
 seed narxni qayta yozmaydi.
@@ -176,7 +184,8 @@ src/
 │   ├── registry.ts       tenant botlarni ishga tushirish/to'xtatish
 │   ├── admin.ts          har bir botdagi umumiy admin panel
 │   └── context.ts        BotTemplate kontrakti
-├── templates/            kino, shop, broadcast, survey
+├── templates/            kino, shop, broadcast, booking, support,
+│                         contest, faq, survey
 ├── jobs/broadcast.ts     rate-limit bilan ommaviy yuborish
 └── lib/                  crypto, state, telegram helperlari
 ```
