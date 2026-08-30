@@ -10,6 +10,7 @@ import { reloadBot, startBot } from "../runtime/registry.js";
 import { adminTgIds, audit, isAdmin, paymentReference } from "./access.js";
 import { paymentDetails } from "./settings.js";
 import { TERMS, termPrice } from "./menu.js";
+import { PLAN_COPY, perUser, recommend } from "./plancopy.js";
 
 const SCOPE = "platform";
 
@@ -22,17 +23,35 @@ export async function showPlansFor(ctx: Context, botId: string) {
     return void ctx.editMessageText("Bu shablon uchun tarif topilmadi. Administratorga murojaat qiling.");
   }
 
+  // Recommend against what this bot actually has today, with room to grow —
+  // a generic list makes the owner guess, and guessing wrong costs them money.
+  const current = await db.botUser.count({ where: { botId } });
+  const headroom = Math.max(Math.ceil(current * 1.5), current + 50);
+  const suggested = recommend(plans, headroom, record.templateKey === "shop");
+
   // callback_data is capped at 64 bytes by Telegram: two uuids do not fit, and
   // an oversized button makes the API reject the whole message silently.
   const kb = new InlineKeyboard();
   for (const p of plans) {
-    kb.text(`${p.name} — ${money(p.priceUzs)} (${p.maxBotUsers} obunachi)`, `py:${botId}:${p.code}`).row();
+    const mark = p.code === suggested?.code ? "✅ " : "";
+    kb.text(`${mark}${p.name} — ${money(p.priceUzs)} · ${p.maxBotUsers} obunachi`, `py:${botId}:${p.code}`).row();
   }
   kb.text("◀️ Orqaga", `p:bot:${botId}`);
 
+  const lines = plans.map((p) => {
+    const mark = p.code === suggested?.code ? "✅ " : "• ";
+    return `${mark}<b>${esc(p.name)}</b> — ${money(p.priceUzs)}/oy · ${p.maxBotUsers.toLocaleString("ru-RU").replace(/,/g, " ")} obunachi\n     <i>${esc(PLAN_COPY[p.code]?.audience ?? "")}</i> · ${perUser(p.priceUzs, p.maxBotUsers)}/obunachi`;
+  });
+
   await ctx.editMessageText(
-    `💳 <b>Tarif tanlang</b>\n\n@${esc(record.tgUsername)} uchun.\n\n` +
-      `Har bir tarif <b>30 kunga</b>. Limitdan oshsangiz botga yangi obunachi qo'shilmaydi.`,
+    `💳 <b>Tarif tanlang</b> — @${esc(record.tgUsername)}\n\n` +
+      `Hozir botingizda: <b>${current}</b> obunachi\n` +
+      (suggested
+        ? `✅ bilan belgilangani — o'sish uchun joy qoldirib tanlangan tavsiya.\n\n`
+        : `\n`) +
+      lines.join("\n\n") +
+      `\n\n<i>Limitga yetganda eski obunachilar ishlayveradi, faqat yangilari qo'shilmaydi. ` +
+      `Tarifni istalgan vaqt oshirsangiz qolgan kunlar yo'qolmaydi.</i>`,
     { parse_mode: "HTML", reply_markup: kb },
   );
 }

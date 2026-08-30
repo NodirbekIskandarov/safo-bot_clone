@@ -11,7 +11,9 @@ import { templateList, templates } from "../templates/index.js";
 import { accessFor, openSubscription } from "../billing/subscription.js";
 import { registerPlatformAdmin } from "./adminpanel.js";
 import { registerPaymentReview, showInvoice, showPlansFor, showTerms, submitReceipt } from "./payments.js";
-import { isMenuButton } from "./menu.js";
+import { isMenuButton, TERMS, termPrice } from "./menu.js";
+import { PLAN_COPY, perUser, recommend } from "./plancopy.js";
+import { TEMPLATE_COPY } from "./templatecopy.js";
 import { isAdmin } from "./access.js";
 
 const SCOPE = "platform";
@@ -28,6 +30,7 @@ const mainKeyboard = new Keyboard()
 function templatePicker(): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const t of templateList) kb.text(`${t.emoji} ${t.name}`, `p:tpl:${t.key}`).row();
+  kb.text("🎯 Qaysi bot menga kerak?", "p:tguide");
   return kb;
 }
 
@@ -54,25 +57,80 @@ const WELCOME =
   `Tayyor shablon tanlaysiz, @BotFather'dan olingan tokenni yuborasiz — bot 2 daqiqada ishlay boshlaydi.\n\n` +
   `Boshlash uchun «➕ Bot yaratish» tugmasini bosing.`;
 
-const HELP =
-  `❓ <b>Yordam</b>\n\n` +
-  `<b>1. Token qanday olinadi?</b>\n` +
-  `• Telegram'da @BotFather ni oching\n` +
-  `• <code>/newbot</code> yuboring\n` +
-  `• Bot nomini yozing (masalan: Mening Kinom)\n` +
-  `• Username o'ylab toping — <b>bot</b> bilan tugashi shart (masalan: mening_kino_bot)\n` +
-  `• BotFather sizga tokenni beradi — shuni menga yuboring\n\n` +
-  `<b>2. Botimni qanday boshqaraman?</b>\n` +
-  `O'z botingizni oching va <code>/admin</code> yuboring. Kino qo'shish, mahsulot qo'shish, ` +
-  `xabar yuborish, statistika — hammasi o'sha yerda.\n\n` +
-  `<b>3. Token xavfsizmi?</b>\n` +
-  `Token shifrlangan holda saqlanadi va hech qayerda ko'rsatilmaydi. Siz yuborgan xabar ` +
-  `darhol o'chiriladi.\n\n` +
-  `<b>4. Necha pul turadi?</b>\n` +
-  `Birinchi bot <b>7 kun bepul</b> ishlaydi — karta talab qilinmaydi. Keyin tarif tanlaysiz, ` +
-  `narxlar «💳 Tariflar» bo'limida. To'lov karta orqali, chekni botga tashlaysiz.\n\n` +
-  `<b>5. Botni o'chirsam nima bo'ladi?</b>\n` +
-  `Bot va uning barcha ma'lumotlari (foydalanuvchilar, kinolar, buyurtmalar) o'chadi. Bu qaytarilmaydi.`;
+const HELP_MENU = new InlineKeyboard()
+  .text("🚀 Bot qanday yaratiladi", "h:new")
+  .row()
+  .text("⚙️ Botni boshqarish", "h:manage")
+  .text("💳 To'lov", "h:pay")
+  .row()
+  .text("🔒 Xavfsizlik", "h:sec")
+  .text("🛠 Muammo bo'lsa", "h:trouble");
+
+const HELP_SECTIONS: Record<string, string> = {
+  new:
+    `🚀 <b>Bot qanday yaratiladi</b>\n\n` +
+    `<b>1. Token oling</b>\n` +
+    `Telegram'da @BotFather ni oching → <code>/newbot</code> → bot nomini yozing → ` +
+    `username o'ylab toping (<b>bot</b> bilan tugashi shart, masalan <code>mening_kino_bot</code>).\n` +
+    `BotFather sizga uzun token beradi. Bu bepul va 1 daqiqa vaqt oladi.\n\n` +
+    `<b>2. Shablon tanlang</b>\n` +
+    `«➕ Bot yaratish» → shablonni bosing → to'liq tavsifini o'qing → «Shu botni yaratish».\n\n` +
+    `<b>3. Tokenni tashlang</b>\n` +
+    `Tokenni shu chatga yuboring. Bot bir necha soniyada ishlay boshlaydi.\n\n` +
+    `<b>4. Kontent qo'shing</b>\n` +
+    `O'z botingizni oching → <code>/start</code> → <code>/admin</code>.\n\n` +
+    `🎁 Birinchi bot <b>7 kun bepul</b>. Karta so'ralmaydi.`,
+  manage:
+    `⚙️ <b>Botni boshqarish</b>\n\n` +
+    `<b>Ikki xil panel bor — chalkashtirmang:</b>\n\n` +
+    `📱 <b>Shu bot (@Botxona_bot)</b>\n` +
+    `   • bot yaratish va o'chirish\n` +
+    `   • ishga tushirish / to'xtatish\n` +
+    `   • salomlashuv matnini o'zgartirish\n` +
+    `   • tarif va to'lov\n\n` +
+    `🤖 <b>Sizning botingiz → /admin</b>\n` +
+    `   • kontent: kino, mahsulot, savol, xizmat\n` +
+    `   • 📢 barcha obunachilarga xabar yuborish\n` +
+    `   • 📊 statistika: obunachilar, bugungi qo'shilganlar\n` +
+    `   • 👥 foydalanuvchilar ro'yxati\n\n` +
+    `<i>Ya'ni kontent har doim o'z botingiz ichida qo'shiladi.</i>`,
+  pay:
+    `💳 <b>To'lov va tariflar</b>\n\n` +
+    `<b>Bepul davr:</b> birinchi bot 7 kun. Akkauntga bir marta beriladi — ikkinchi bot uchun ` +
+    `darhol tarif tanlanadi.\n\n` +
+    `<b>To'lov qanday:</b>\n` +
+    `1. «💳 Tariflar» → tarif va muddatni tanlang\n` +
+    `2. Chiqqan kartaga summani o'tkazing\n` +
+    `3. Chek skrinshotini shu yerga tashlang\n` +
+    `4. Admin tasdiqlaydi — bot darhol ishlaydi\n\n` +
+    `<b>Muddat:</b> 1 oy · 3 oy (−10%) · 12 oy (−20%)\n\n` +
+    `<b>Muddat tugasa:</b> 3 kun muhlat beriladi, bot ishlayveradi. Keyin to'xtaydi, ` +
+    `lekin <b>ma'lumotlar saqlanadi</b> — to'lasangiz o'sha zahoti qayta ishlaydi.\n\n` +
+    `<b>Erta to'lasangiz</b> qolgan kunlar yo'qolmaydi, ustiga qo'shiladi.`,
+  sec:
+    `🔒 <b>Xavfsizlik</b>\n\n` +
+    `<b>Token:</b> AES-256-GCM bilan shifrlanadi. Faqat Telegram'ga murojaat paytida ochiladi. ` +
+    `Hech qayerda — panelda ham, log'da ham — ko'rinmaydi. Siz yuborgan xabar darhol o'chiriladi.\n\n` +
+    `<b>Ma'lumotlar:</b> har bir botning foydalanuvchilari faqat o'ziga tegishli. ` +
+    `Boshqa mijozlar ularni ko'ra olmaydi va uchinchi tomonga berilmaydi.\n\n` +
+    `<b>Bot o'chirilsa:</b> uning barcha ma'lumotlari ham o'chadi. Bu qaytarilmaydi.\n\n` +
+    `<b>Biz hech qachon</b> sizning tokeningiz bilan o'z nomimizdan xabar yubormaymiz.`,
+  trouble:
+    `🛠 <b>Muammo bo'lsa</b>\n\n` +
+    `<b>«Token ishlamadi»</b>\n` +
+    `Tokenni to'liq nusxalang — boshida yoki oxirida bo'sh joy qolmasin. Yoki @BotFather'da ` +
+    `<code>/revoke</code> qilib yangisini oling.\n\n` +
+    `<b>«Bu token allaqachon ishlatilgan»</b>\n` +
+    `Shu token bilan bot allaqachon yaratilgan. @BotFather'dan yangi bot oching.\n\n` +
+    `<b>Botim javob bermayapti</b>\n` +
+    `«🤖 Mening botlarim» → holatini tekshiring. ⚪️ bo'lsa «Ishga tushirish» bosing. ` +
+    `To'lov muddati tugagan bo'lishi ham mumkin.\n\n` +
+    `<b>Kino/rasm yuborilmayapti</b>\n` +
+    `Fayl boshqa bot orqali yuklangan bo'lsa ishlamaydi — Telegram fayllarni botga bog'laydi. ` +
+    `Qayta yuklang.\n\n` +
+    `<b>Yangi odam botga qo'shilmayapti</b>\n` +
+    `Tarif limitiga yetgansiz. «💳 Tariflar» → kattarog'ini tanlang.`,
+};
 
 export function createPlatformBot(): Bot {
   const bot = new Bot(config.PLATFORM_BOT_TOKEN);
@@ -99,8 +157,32 @@ export function createPlatformBot(): Bot {
     await ctx.reply("Bekor qilindi.", { reply_markup: mainKeyboard });
   });
 
-  bot.hears("❓ Yordam", (ctx) => ctx.reply(HELP, { parse_mode: "HTML" }));
-  bot.command("yordam", (ctx) => ctx.reply(HELP, { parse_mode: "HTML" }));
+  const helpHome = (ctx: Context, edit = false) => {
+    const text =
+      `❓ <b>Yordam</b>\n\nQaysi bo'lim kerak?\n\n` +
+      `<i>Savolingizga javob topmasangiz shu yerga yozing — administratorga yetkazamiz.</i>`;
+    return edit
+      ? ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: HELP_MENU }).catch(() => {})
+      : ctx.reply(text, { parse_mode: "HTML", reply_markup: HELP_MENU });
+  };
+
+  bot.hears("❓ Yordam", (ctx) => helpHome(ctx));
+  bot.command("yordam", (ctx) => helpHome(ctx));
+
+  bot.callbackQuery("h:home", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await helpHome(ctx, true);
+  });
+
+  bot.callbackQuery(/^h:(\w+)$/, async (ctx) => {
+    const section = HELP_SECTIONS[ctx.match[1]!];
+    if (!section) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(section, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("◀️ Yordam bo'limlari", "h:home"),
+    });
+  });
 
   // ------------------------------------------------------------- create bot
 
@@ -110,27 +192,90 @@ export function createPlatformBot(): Bot {
     if (count >= config.MAX_BOTS_PER_OWNER) {
       return ctx.reply(`Sizda allaqachon ${count} ta bot bor. Limit: ${config.MAX_BOTS_PER_OWNER}.`);
     }
-    await ctx.reply("🧩 <b>1-qadam: shablon tanlang</b>\n\nBot nima ish qilishini tanlang:", {
-      parse_mode: "HTML",
-      reply_markup: templatePicker(),
-    });
+    const lines = templateList.map((t) => `${t.emoji} <b>${esc(t.name)}</b> — ${esc(t.tagline)}`);
+    await ctx.reply(
+      `🧩 <b>1-qadam: shablon tanlang</b>\n\n${lines.join("\n\n")}\n\n` +
+        `<i>Har birini bosib to'liq ma'lumot olishingiz mumkin — nima qilishi, mijoz nimani ko'rishi, ` +
+        `siz nimani boshqarishingiz.</i>`,
+      { parse_mode: "HTML", reply_markup: templatePicker() },
+    );
   });
 
   bot.callbackQuery(/^p:tpl:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const template = templates[ctx.match[1]!];
     if (!template) return;
+    const copy = TEMPLATE_COPY[template.key];
+
+    const flow = (copy?.userFlow ?? []).map((step, i) => `   ${i + 1}. ${esc(step)}`).join("\n");
+    const tools = (copy?.adminTools ?? []).map((t) => `   • ${esc(t)}`).join("\n");
+
+    await ctx.editMessageText(
+      `${template.emoji} <b>${esc(template.name)}</b>\n\n` +
+        `${esc(template.description)}\n\n` +
+        `━━━━━━━━━━━━━━\n\n` +
+        `🏪 <b>Kimlar uchun</b>\n   ${esc(copy?.useCases ?? "")}\n\n` +
+        `👤 <b>Mijoz nimani ko'radi</b>\n${flow}\n\n` +
+        `⚙️ <b>Siz nimani boshqarasiz</b>\n${tools}\n\n` +
+        (copy?.needsBusinessPlan
+          ? `💳 <b>Tarif:</b> biznes tarifi kerak (99 000 so'mdan). Sinov muddatida bepul ishlaydi.\n\n`
+          : `💳 <b>Tarif:</b> har qanday tarifda ishlaydi.\n\n`) +
+        (copy?.note ? `ℹ️ <i>${esc(copy.note)}</i>` : ""),
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("✅ Shu botni yaratish", `p:tplgo:${template.key}`)
+          .row()
+          .text("◀️ Boshqa shablonlar", "p:tpls"),
+      },
+    );
+  });
+
+  bot.callbackQuery("p:tpls", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const lines = templateList.map((t) => `${t.emoji} <b>${esc(t.name)}</b> — ${esc(t.tagline)}`);
+    await ctx.editMessageText(`🧩 <b>Shablon tanlang</b>\n\n${lines.join("\n\n")}`, {
+      parse_mode: "HTML",
+      reply_markup: templatePicker(),
+    });
+  });
+
+  bot.callbackQuery("p:tguide", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(
+      `🎯 <b>Qaysi bot kerak?</b>\n\nMaqsadingizga qarab tanlang:\n\n` +
+        `💰 <b>Pul ishlashim kerak</b>\n` +
+        `   🛒 Mahsulot sotaman → <b>Do'kon</b>\n` +
+        `   📅 Xizmat ko'rsataman (sartaroshxona, klinika) → <b>Navbat</b>\n\n` +
+        `📣 <b>Auditoriya yig'ishim kerak</b>\n` +
+        `   🎬 Kino/kontent tarqataman → <b>Kino</b>\n` +
+        `   📢 Obunachilarga xabar yuboraman → <b>Reklama</b>\n` +
+        `   🎁 Kanalimni tez o'stirmoqchiman → <b>Konkurs</b>\n\n` +
+        `⏱ <b>Vaqtimni tejashim kerak</b>\n` +
+        `   💬 Mijozlar savolига javob beraman → <b>Aloqa</b>\n` +
+        `   🤖 Bir xil savol takrorlanaveradi → <b>Savol-javob</b>\n` +
+        `   📋 Ariza/fikr yig'aman → <b>Anketa</b>\n\n` +
+        `<i>Keyinroq boshqa shablonda yana bot yaratishingiz mumkin.</i>`,
+      { parse_mode: "HTML", reply_markup: templatePicker() },
+    );
+  });
+
+  bot.callbackQuery(/^p:tplgo:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const template = templates[ctx.match[1]!];
+    if (!template) return;
 
     setStep(SCOPE, ctx.from!.id, "await_token", { templateKey: template.key });
     await ctx.editMessageText(
-      `${template.emoji} <b>${esc(template.name)}</b>\n\n${esc(template.description)}\n\n` +
-        `━━━━━━━━━━━━━━\n\n` +
+      `${template.emoji} <b>${esc(template.name)}</b>\n\n` +
         `🔑 <b>2-qadam: token yuboring</b>\n\n` +
         `1. @BotFather ni oching\n` +
         `2. <code>/newbot</code> yuboring\n` +
-        `3. Bot nomi va usernameni kiriting\n` +
-        `4. Olingan tokenni shu yerga tashlang\n\n` +
+        `3. Bot nomini yozing (masalan: Mening Do'konim)\n` +
+        `4. Username o'ylab toping — <b>bot</b> bilan tugashi shart\n` +
+        `5. BotFather bergan tokenni shu yerga tashlang\n\n` +
         `<i>Token shunday ko'rinadi:</i>\n<code>1234567890:AAF...xyz</code>\n\n` +
+        `🔒 Token shifrlanadi va yuborgan xabaringiz darhol o'chiriladi.\n\n` +
         `Bekor qilish: /bekor`,
       { parse_mode: "HTML" },
     );
@@ -150,34 +295,165 @@ export function createPlatformBot(): Bot {
       orderBy: { sortOrder: "asc" },
     });
 
-    const line = (p: (typeof plans)[number]) => {
-      const f = JSON.parse(p.features) as { orders: boolean; broadcastDailyLimit: number };
-      const price = p.priceUzs === 0 ? "<b>bepul</b>" : `<b>${money(p.priceUzs)}</b>`;
-      const days = p.priceUzs === 0 ? `${p.intervalDays} kun` : "oyiga";
-      return (
-        `${esc(p.name)} — ${price} / ${days}\n` +
-        `   👥 ${p.maxBotUsers.toLocaleString("ru-RU").replace(/,/g, " ")} obunachi · ` +
-        `📢 ${f.broadcastDailyLimit} xabar/kun${f.orders ? " · 🛒 do'kon" : ""}`
-      );
+    const row = (p: (typeof plans)[number]) => {
+      const price = p.priceUzs === 0 ? "bepul" : `${money(p.priceUzs)}/oy`;
+      const users = p.maxBotUsers.toLocaleString("ru-RU").replace(/,/g, " ");
+      return `<b>${esc(p.name)}</b> · ${price}\n   👥 ${users} obunachi — <i>${esc(PLAN_COPY[p.code]?.audience ?? "")}</i>`;
     };
-
-    const group = (g: string) => plans.filter((p) => p.group === g).map(line).join("\n\n");
 
     const text =
       `💳 <b>Tariflar</b>\n\n` +
-      `🎁 <b>Sinov</b>\n${group("trial")}\n` +
-      `<i>Har bir akkauntga bir marta beriladi.</i>\n\n` +
+      `Tariflar <b>ikki narsa</b> bilan farqlanadi:\n\n` +
+      `1️⃣ <b>Nechta obunachi</b> — botingizga qancha odam qo'shila oladi. Limitga yetganda ` +
+      `yangi odam qo'shilmaydi (eskilari ishlayveradi).\n` +
+      `2️⃣ <b>Buyurtma qabul qilish</b> — do'kon boti uchun <b>biznes</b> tarifi kerak. ` +
+      `Kino, reklama, navbat, aloqa, konkurs, savol-javob, anketa — <b>har qanday</b> tarifda ishlaydi.\n\n` +
+      `Qolgan hamma narsa (broadcast, majburiy obuna, eksport, statistika) barcha tarifda bor.\n\n` +
       `━━━━━━━━━━━━━━\n\n` +
-      `📣 <b>Kontent botlari</b> <i>(kino, reklama, anketa)</i>\n\n${group("standard")}\n\n` +
-      `━━━━━━━━━━━━━━\n\n` +
-      `🛒 <b>Biznes botlari</b> <i>(do'kon — buyurtma qabul qilish)</i>\n\n${group("business")}\n\n` +
-      `━━━━━━━━━━━━━━\n\n` +
-      `To'lov karta orqali. Chekni yuborasiz, admin tasdiqlaydi — bot darhol ishlaydi.`;
+      `🎁 ${row(plans.find((p) => p.code === "trial")!)}\n   <i>Bir marta, karta so'ralmaydi</i>\n\n` +
+      `📣 <b>KONTENT BOTLARI</b>\n\n` +
+      plans.filter((p) => p.group === "standard").map(row).join("\n\n") +
+      `\n\n🛒 <b>DO'KON BOTLARI</b> <i>(buyurtma qabul qiladi)</i>\n\n` +
+      plans.filter((p) => p.group === "business").map(row).join("\n\n") +
+      `\n\n━━━━━━━━━━━━━━\n\n` +
+      `Batafsil ko'rish uchun tarif tugmasini bosing.`;
 
-    const kb = new InlineKeyboard().text("💳 To'lov qilish", "p:paypick");
+    const kb = new InlineKeyboard().text("🎯 Menga qaysi tarif mos?", "p:guide").row();
+    plans
+      .filter((p) => p.priceUzs > 0)
+      .forEach((p, i) => {
+        kb.text(p.name, `pd:${p.code}`);
+        if (i % 2 === 1) kb.row();
+      });
+    kb.row().text("💳 To'lov qilish", "p:paypick");
+
     if (edit) await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
     else await ctx.reply(text, { parse_mode: "HTML", reply_markup: kb });
   }
+
+  // ---- single plan, in full
+  bot.callbackQuery(/^pd:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const plan = await db.plan.findUnique({ where: { code: ctx.match[1]! } });
+    if (!plan) return;
+
+    const f = JSON.parse(plan.features) as { orders: boolean; broadcastDailyLimit: number };
+    const copy = PLAN_COPY[plan.code];
+    const all = await db.plan.findMany({ where: { isActive: true, isArchived: false }, orderBy: { sortOrder: "asc" } });
+    const sameGroup = all.filter((p) => p.group === plan.group && p.priceUzs > 0);
+    const idx = sameGroup.findIndex((p) => p.code === plan.code);
+    const prev = idx > 0 ? sameGroup[idx - 1] : undefined;
+    const next = sameGroup[idx + 1];
+
+    const terms = TERMS.map((t) => {
+      const total = termPrice(plan.priceUzs, t.months);
+      const save = t.discount > 0 ? ` <i>(−${Math.round(t.discount * 100)}%)</i>` : "";
+      return `   ${t.label} — <b>${money(total)}</b>${save}`;
+    }).join("\n");
+
+    await ctx.editMessageText(
+      `<b>${esc(plan.name)}</b> — ${money(plan.priceUzs)}/oy\n\n` +
+        `<i>${esc(copy?.audience ?? "")}</i>\n` +
+        `${esc(copy?.example ?? "")}\n\n` +
+        `━━━━━━━━━━━━━━\n\n` +
+        `👥 <b>${plan.maxBotUsers.toLocaleString("ru-RU").replace(/,/g, " ")}</b> obunachigacha\n` +
+        `📢 Kuniga <b>${f.broadcastDailyLimit}</b> ta ommaviy xabar\n` +
+        `🛒 Buyurtma qabul qilish: <b>${f.orders ? "bor" : "yo'q"}</b>\n` +
+        `📥 Eksport, 🔒 majburiy obuna, 📊 statistika: <b>bor</b>\n\n` +
+        `💡 Bir obunachi uchun: <b>${perUser(plan.priceUzs, plan.maxBotUsers)}/oy</b>\n\n` +
+        `━━━━━━━━━━━━━━\n\n` +
+        `<b>Muddat:</b>\n${terms}\n\n` +
+        (prev
+          ? `⬇️ <b>${esc(prev.name)}</b> (${money(prev.priceUzs)}) — ${prev.maxBotUsers} obunachi, arzonroq\n`
+          : "") +
+        (next
+          ? `⬆️ <b>${esc(next.name)}</b> (${money(next.priceUzs)}) — ${next.maxBotUsers} obunachi, kengroq\n`
+          : ""),
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("💳 Shu tarifni tanlash", "p:paypick")
+          .row()
+          .text("◀️ Barcha tariflar", "p:tariffs"),
+      },
+    );
+  });
+
+  // ---- two questions, then a concrete recommendation
+  bot.callbackQuery("p:guide", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(
+      `🎯 <b>Qaysi tarif mos?</b>\n\n1-savol: botingiz nima qiladi?`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("🛒 Buyurtma qabul qiladi", "pg:o:1")
+          .row()
+          .text("📣 Kontent, xabar, navbat, anketa", "pg:o:0")
+          .row()
+          .text("◀️ Orqaga", "p:tariffs"),
+      },
+    );
+  });
+
+  bot.callbackQuery(/^pg:o:([01])$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const orders = ctx.match[1] === "1";
+    await ctx.editMessageText(
+      `🎯 <b>2-savol:</b> yaqin oylarda nechta obunachi kutyapsiz?\n\n` +
+        `<i>Aniq bilmasangiz kamrog'ini tanlang — keyin istalgan vaqt oshirasiz, ` +
+        `qolgan kunlar yo'qolmaydi.</i>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("500 gacha", `pg:u:${orders ? 1 : 0}:500`)
+          .text("2 000", `pg:u:${orders ? 1 : 0}:2000`)
+          .row()
+          .text("5 000", `pg:u:${orders ? 1 : 0}:5000`)
+          .text("15 000+", `pg:u:${orders ? 1 : 0}:15000`)
+          .row()
+          .text("◀️ Orqaga", "p:guide"),
+      },
+    );
+  });
+
+  bot.callbackQuery(/^pg:u:([01]):(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const orders = ctx.match[1] === "1";
+    const expected = Number(ctx.match[2]);
+
+    const plans = await db.plan.findMany({
+      where: { isActive: true, isArchived: false, priceUzs: { gt: 0 } },
+      orderBy: { sortOrder: "asc" },
+    });
+    const pick = recommend(plans, expected, orders);
+
+    if (!pick) {
+      return void ctx.editMessageText(
+        `Bu hajm uchun alohida shart kerak — admin bilan bog'laning.`,
+        { reply_markup: new InlineKeyboard().text("◀️ Tariflar", "p:tariffs") },
+      );
+    }
+
+    const copy = PLAN_COPY[pick.code];
+    await ctx.editMessageText(
+      `🎯 <b>Sizga mos: ${esc(pick.name)}</b>\n\n` +
+        `${money(pick.priceUzs)}/oy · ${pick.maxBotUsers.toLocaleString("ru-RU").replace(/,/g, " ")} obunachi\n\n` +
+        `<i>${esc(copy?.example ?? "")}</i>\n\n` +
+        `Nega shu: ${orders ? "buyurtma qabul qilish kerak, " : ""}` +
+        `kutilgan ${expected.toLocaleString("ru-RU").replace(/,/g, " ")} obunachini qoplaydigan ` +
+        `<b>eng arzon</b> tarif shu.\n\n` +
+        `<i>Sinov muddati esa baribir bepul — avval sinab ko'ring.</i>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("💳 Shu tarifni olish", "p:paypick")
+          .row()
+          .text("📋 Batafsil", `pd:${pick.code}`)
+          .text("◀️ Tariflar", "p:tariffs"),
+      },
+    );
+  });
 
   bot.callbackQuery("p:paypick", async (ctx) => {
     await ctx.answerCallbackQuery();
