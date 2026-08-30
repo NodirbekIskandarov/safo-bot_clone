@@ -220,19 +220,43 @@ ularni `Map` da saqlaydi. Sozlama o'zgarsa `reloadBot()` chaqiriladi — **resta
 
 ## Serverga qo'yish
 
-```bash
-git clone <repo> && cd botplatform
-npm install && npm run db:push
-# .env ni to'ldiring
-npx pm2 start "npm start" --name botplatform
-npx pm2 save && npx pm2 startup
-```
+Ilova `/opt/botxona` da, `systemd` bilan yuritiladi — server qayta yuklansa o'zi ko'tariladi,
+jarayon o'lsa 5 soniyada qayta ishga tushadi.
 
-Baza — bitta fayl: `data/app.db`. Zaxira nusxa:
+**Birinchi marta:**
 
 ```bash
-cp data/app.db backups/app-$(date +%F).db
+git clone https://github.com/NodirbekIskandarov/safo-bot_clone.git /opt/botxona
+cd /opt/botxona && npm install
+cp .env.example .env && chmod 600 .env   # token, kalit, admin ID
+npx prisma generate && npx prisma db push
+cp infra/botxona.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now botxona
 ```
+
+**Keyingi yangilanishlar** — bitta buyruq:
+
+```bash
+cd /opt/botxona && ./infra/deploy.sh
+```
+
+Skript: baza zaxirasini oladi → `git pull` → `npm install` → migratsiya → restart →
+ishga tushganini tekshiradi. Ishga tushmasa loglarni ko'rsatib xato bilan chiqadi.
+
+**Kundalik ishlar:**
+
+```bash
+systemctl status botxona          # holat
+tail -f /var/log/botxona.log      # jonli loglar
+systemctl restart botxona         # qayta ishga tushirish
+ls -lh /opt/botxona/backups/      # zaxira nusxalar
+```
+
+Zaxira har kuni soat 03:00 da avtomatik olinadi (`infra/backup.sh`, cron), 14 kun saqlanadi.
+Log har kuni rotatsiya qilinadi, 14 kun.
+
+⚠️ **Muhim:** `ENCRYPTION_KEY` ni hech qachon o'zgartirmang va `.env` ni yo'qotmang —
+usiz saqlangan bot tokenlari ochilmaydi. Uni alohida joyda saqlang.
 
 ### Postgres'ga o'tish
 
