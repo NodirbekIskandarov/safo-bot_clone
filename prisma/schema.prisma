@@ -322,6 +322,7 @@ model Payment {
   planId         String
   plan           Plan      @relation(fields: [planId], references: [id])
   amountUzs      Int
+  months         Int       @default(1)         // 1 | 3 | 12 — longer terms are discounted
   status         String    @default("pending") // pending | approved | rejected
   receiptFileId  String?                       // screenshot of the transfer
   receiptText    String?

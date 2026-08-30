@@ -55,22 +55,26 @@ export async function backfillSubscriptions(): Promise<number> {
 }
 
 /** Apply an approved payment: move to `active` and push the period forward. */
-export async function activate(subscriptionId: string, planId: string) {
+export async function activate(subscriptionId: string, planId: string, months = 1) {
   const [sub, plan] = await Promise.all([
     db.subscription.findUniqueOrThrow({ where: { id: subscriptionId } }),
     db.plan.findUniqueOrThrow({ where: { id: planId } }),
   ]);
 
-  // Extend from the existing end date when still valid, so paying early is
-  // never punished by losing the remaining days.
-  const base =
-    sub.currentPeriodEnd && sub.currentPeriodEnd > new Date() ? sub.currentPeriodEnd : new Date();
+  // Extend from whichever entitlement is still running — paid period OR the
+  // remaining trial. Paying on day 2 of a trial must not burn the other 5 days,
+  // or the cheapest move for the customer is to wait until the last hour.
+  const now = new Date();
+  const candidates = [sub.currentPeriodEnd, sub.trialEndsAt].filter(
+    (d): d is Date => d instanceof Date && d > now,
+  );
+  const base = candidates.length > 0 ? new Date(Math.max(...candidates.map((d) => d.getTime()))) : now;
 
   return db.subscription.update({
     where: { id: subscriptionId },
     data: {
       planId, status: "active",
-      currentPeriodEnd: addDays(base, plan.intervalDays),
+      currentPeriodEnd: addDays(base, plan.intervalDays * months),
       graceEndsAt: null, warnedAt: null,
     },
   });

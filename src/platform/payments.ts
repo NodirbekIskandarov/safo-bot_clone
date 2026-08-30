@@ -9,6 +9,7 @@ import { log } from "../lib/log.js";
 import { reloadBot, startBot } from "../runtime/registry.js";
 import { adminTgIds, audit, isAdmin, paymentReference } from "./access.js";
 import { paymentDetails } from "./settings.js";
+import { TERMS, termPrice } from "./menu.js";
 
 const SCOPE = "platform";
 
@@ -21,9 +22,11 @@ export async function showPlansFor(ctx: Context, botId: string) {
     return void ctx.editMessageText("Bu shablon uchun tarif topilmadi. Administratorga murojaat qiling.");
   }
 
+  // callback_data is capped at 64 bytes by Telegram: two uuids do not fit, and
+  // an oversized button makes the API reject the whole message silently.
   const kb = new InlineKeyboard();
   for (const p of plans) {
-    kb.text(`${p.name} — ${money(p.priceUzs)} (${p.maxBotUsers} obunachi)`, `pay:plan:${botId}:${p.id}`).row();
+    kb.text(`${p.name} — ${money(p.priceUzs)} (${p.maxBotUsers} obunachi)`, `py:${botId}:${p.code}`).row();
   }
   kb.text("◀️ Orqaga", `p:bot:${botId}`);
 
@@ -34,13 +37,33 @@ export async function showPlansFor(ctx: Context, botId: string) {
   );
 }
 
-export async function showInvoice(ctx: Context, botId: string, planId: string) {
+export async function showTerms(ctx: Context, botId: string, planCode: string) {
+  const plan = await db.plan.findUnique({ where: { code: planCode } });
+  if (!plan) return;
+
+  const kb = new InlineKeyboard();
+  for (const t of TERMS) {
+    const total = termPrice(plan.priceUzs, t.months);
+    const save = t.discount > 0 ? ` · −${Math.round(t.discount * 100)}%` : "";
+    kb.text(`${t.label} — ${money(total)}${save}`, `pyd:${botId}:${planCode}:${t.months}`).row();
+  }
+  kb.text("◀️ Orqaga", `p:pay:${botId}`);
+
+  await ctx.editMessageText(
+    `📦 <b>${esc(plan.name)}</b> — ${plan.maxBotUsers} obunachi\n\n` +
+      `Muddatni tanlang. Uzoq muddat arzonroq:`,
+    { parse_mode: "HTML", reply_markup: kb },
+  );
+}
+
+export async function showInvoice(ctx: Context, botId: string, planCode: string, months: number) {
   const [record, plan, details] = await Promise.all([
     db.bot.findUnique({ where: { id: botId } }),
-    db.plan.findUnique({ where: { id: planId } }),
+    db.plan.findUnique({ where: { code: planCode } }),
     paymentDetails(),
   ]);
   if (!record || !plan) return;
+  const amount = termPrice(plan.priceUzs, months);
 
   if (!details.card) {
     return void ctx.editMessageText(
@@ -49,18 +72,20 @@ export async function showInvoice(ctx: Context, botId: string, planId: string) {
     );
   }
 
-  setStep(SCOPE, ctx.from!.id, "await_receipt", { botId, planId });
+  setStep(SCOPE, ctx.from!.id, "await_receipt", { botId, planCode, months });
 
   await ctx.editMessageText(
     `💳 <b>To'lov</b>\n\n` +
       `Bot: @${esc(record.tgUsername)}\n` +
-      `Tarif: <b>${esc(plan.name)}</b> — ${plan.maxBotUsers} obunachi, 30 kun\n` +
-      `Summa: <b>${money(plan.priceUzs)}</b>\n\n` +
+      `Tarif: <b>${esc(plan.name)}</b> — ${plan.maxBotUsers} obunachi\n` +
+      `Muddat: <b>${months} oy</b>\n` +
+      `Summa: <b>${money(amount)}</b>\n\n` +
       `━━━━━━━━━━━━━━\n\n` +
       `Quyidagi kartaga o'tkazing:\n\n` +
       `<code>${esc(details.card)}</code>\n` +
       (details.holder ? `<i>${esc(details.holder)}</i>\n` : "") +
       `\n━━━━━━━━━━━━━━\n\n` +
+      `Summani <b>aynan</b> shu miqdorda o'tkazing — tekshirish osonroq bo'ladi.\n\n` +
       `To'lagach <b>chek skrinshotini</b> shu yerga tashlang.\n` +
       `Admin tekshirib tasdiqlaydi — odatda bir necha daqiqada.\n\n` +
       `Bekor qilish: /bekor`,
@@ -78,11 +103,12 @@ export async function submitReceipt(
   if (state?.step !== "await_receipt") return false;
 
   const botId = state.data.botId as string;
-  const planId = state.data.planId as string;
+  const planCode = state.data.planCode as string;
+  const months = (state.data.months as number) ?? 1;
 
   const [owner, plan, record] = await Promise.all([
     db.owner.findUniqueOrThrow({ where: { tgUserId: BigInt(ctx.from!.id) } }),
-    db.plan.findUniqueOrThrow({ where: { id: planId } }),
+    db.plan.findUniqueOrThrow({ where: { code: planCode } }),
     db.bot.findUniqueOrThrow({ where: { id: botId }, include: { subscription: true } }),
   ]);
 
@@ -91,8 +117,9 @@ export async function submitReceipt(
       reference: paymentReference(),
       ownerId: owner.id,
       subscriptionId: record.subscription?.id ?? null,
-      planId,
-      amountUzs: plan.priceUzs,
+      planId: plan.id,
+      amountUzs: termPrice(plan.priceUzs, months),
+      months,
       receiptFileId: input.fileId ?? null,
       receiptText: input.text ?? null,
     },
@@ -103,7 +130,7 @@ export async function submitReceipt(
   await ctx.reply(
     `✅ <b>Chek qabul qilindi</b>\n\n` +
       `Raqam: <code>${payment.reference}</code>\n` +
-      `Summa: ${money(plan.priceUzs)}\n\n` +
+      `Summa: ${money(payment.amountUzs)} (${months} oy)\n\n` +
       `Admin tasdiqlagach botingiz darhol ishga tushadi. Xabar beramiz.`,
     { parse_mode: "HTML" },
   );
@@ -114,7 +141,7 @@ export async function submitReceipt(
     (owner.username ? ` (@${esc(owner.username)})` : "") +
     `\n🆔 <code>${owner.tgUserId}</code>\n` +
     `🤖 @${esc(record.tgUsername)}\n` +
-    `📦 ${esc(plan.name)} — <b>${money(plan.priceUzs)}</b>` +
+    `📦 ${esc(plan.name)} · ${months} oy — <b>${money(payment.amountUzs)}</b>` +
     (input.text ? `\n\n💬 ${esc(input.text)}` : "");
 
   const kb = new InlineKeyboard()
@@ -175,7 +202,7 @@ export function registerPaymentReview(bot: Bot) {
 
     if (!payment.subscription) return ctx.answerCallbackQuery("Obuna topilmadi");
 
-    await activate(payment.subscription.id, payment.planId);
+    await activate(payment.subscription.id, payment.planId, payment.months);
     await db.payment.update({
       where: { id: paymentId },
       data: { status: "approved", reviewedBy: actor, reviewedAt: new Date() },
@@ -205,7 +232,7 @@ export function registerPaymentReview(bot: Bot) {
         `🎉 <b>To'lov tasdiqlandi!</b>\n\n` +
           `Bot: @${esc(payment.subscription!.bot.tgUsername)}\n` +
           `Tarif: <b>${esc(payment.plan.name)}</b>\n` +
-          `Amal qiladi: <b>30 kun</b>\n\n` +
+          `Amal qiladi: <b>${payment.months} oy</b>\n\n` +
           `Botingiz ishlayapti. Rahmat! 🙌`,
         { parse_mode: "HTML" },
       ),

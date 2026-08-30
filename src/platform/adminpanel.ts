@@ -6,6 +6,7 @@ import { esc, money } from "../lib/telegram.js";
 import { runningCount } from "../runtime/registry.js";
 import { adminTgIds, audit, isAdmin, isRootAdmin } from "./access.js";
 import { SETTING_KEYS, getSetting, setSetting } from "./settings.js";
+import { isMenuButton } from "./menu.js";
 
 const SCOPE = "padmin";
 
@@ -173,12 +174,29 @@ export function registerPlatformAdmin(bot: Bot) {
       getSetting(SETTING_KEYS.cardNumber),
       getSetting(SETTING_KEYS.cardHolder),
     ]);
-    setStep(SCOPE, ctx.from!.id, "await_card");
+    // No auto-edit mode: entering it on open turned every later tap into a
+    // failed card number.
     await ctx.editMessageText(
       `💳 <b>To'lov kartasi</b>\n\n` +
-        `Hozirgi: ${card ? `<code>${esc(card)}</code>` : "<i>sozlanmagan</i>"}\n` +
+        `Karta: ${card ? `<code>${esc(card)}</code>` : "<i>sozlanmagan</i>"}\n` +
         `Egasi: ${holder ? esc(holder) : "<i>sozlanmagan</i>"}\n\n` +
-        `O'zgartirish uchun quyidagi ko'rinishda yuboring:\n\n` +
+        (card ? "Mijozlar to'lov oynasida shu rekvizitni ko'radi." : "⚠️ Kartasiz to'lov oynasi ochilmaydi."),
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("✏️ O'zgartirish", "pa:cardedit")
+          .row()
+          .text("◀️ Orqaga", "pa:menu"),
+      },
+    );
+  });
+
+  bot.callbackQuery("pa:cardedit", async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    setStep(SCOPE, ctx.from!.id, "await_card");
+    await ctx.editMessageText(
+      `✏️ <b>Karta o'zgartirish</b>\n\nQuyidagi ko'rinishda yuboring:\n\n` +
         `<code>8600 1234 5678 9012\nISKANDAROV NODIRBEK</code>\n\n` +
         `<i>Birinchi qator — karta, ikkinchi qator — egasining ismi.</i>\n\nBekor: /bekor`,
       { parse_mode: "HTML" },
@@ -252,7 +270,7 @@ export function registerPlatformAdmin(bot: Bot) {
   /** Returns true when the message was consumed by an admin wizard. */
   bot.use(async (ctx, next) => {
     const text = ctx.message?.text?.trim();
-    if (!text || text.startsWith("/") || !ctx.from) return next();
+    if (!text || text.startsWith("/") || !ctx.from || isMenuButton(text)) return next();
 
     const state = getStep(SCOPE, ctx.from.id);
     if (!state) return next();

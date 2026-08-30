@@ -40,6 +40,16 @@ export function clearStep(scope: string, userId: bigint | number) {
   store.delete(key(scope, userId));
 }
 
+/**
+ * Drop every wizard this user is inside, whatever the scope.
+ * /bekor must actually cancel — clearing one scope leaves the user trapped in
+ * another, where their next menu tap is eaten as wizard input.
+ */
+export function clearAll(userId: bigint | number) {
+  const suffix = `:${userId}`;
+  for (const k of store.keys()) if (k.endsWith(suffix)) store.delete(k);
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of store) if (v.expiresAt < now) store.delete(k);

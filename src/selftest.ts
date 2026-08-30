@@ -9,6 +9,7 @@ import { fingerprint, open, seal } from "./lib/crypto.js";
 import { templateList, templates } from "./templates/index.js";
 import { payablePlans, seedPlans } from "./billing/plans.js";
 import { accessFor, activate, billingTick, openSubscription } from "./billing/subscription.js";
+import { TERMS, termPrice } from "./platform/menu.js";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -149,6 +150,34 @@ try {
   await activate(second.subscription.id, paid.id);
   const extended = (await db.subscription.findUniqueOrThrow({ where: { id: second.subscription.id } })).currentPeriodEnd!;
   check("erta to'lasa kunlar qo'shiladi, yo'qolmaydi", extended.getTime() > before.getTime());
+
+  // Telegram rejects any button whose callback_data exceeds 64 bytes, and it
+  // fails the whole message — the symptom is "the button does nothing".
+  const uuid = "3a3ed9b5-0c6c-4196-b397-58eb6e717028";
+  const samples = [
+    `p:bot:${uuid}`, `p:pay:${uuid}`, `p:toggle:${uuid}`, `p:delyes:${uuid}`, `p:text:${uuid}`,
+    `adm:pay:ok:${uuid}`, `pa:payv:${uuid}`, `sh:ord:confirmed:${uuid}`, `sh:dec:${uuid}`,
+    ...plans.map((p) => `py:${uuid}:${p.code}`),
+    ...plans.flatMap((p) => TERMS.map((t) => `pyd:${uuid}:${p.code}:${t.months}`)),
+  ];
+  const oversized = samples.filter((c) => Buffer.byteLength(c) > 64);
+  check("barcha tugmalar 64 bayt limitiga sig'adi", oversized.length === 0, oversized[0] ?? `eng uzun: ${Math.max(...samples.map((c) => Buffer.byteLength(c)))} bayt`);
+
+  check("3 oy 10% arzon", termPrice(39_000, 3) === 105_000, `${termPrice(39_000, 3)}`);
+  check("12 oy 20% arzon", termPrice(39_000, 12) === 374_000, `${termPrice(39_000, 12)}`);
+  check("1 oy chegirmasiz", termPrice(39_000, 1) === 39_000);
+  check("summalar 1000 ga yaxlitlangan", TERMS.every((t) => termPrice(15_000, t.months) % 1000 === 0));
+
+  // paying mid-trial must not throw away the unused trial days
+  const bot3 = await mk(3);
+  const third = await openSubscription(bot3.id, owner.id);
+  await db.subscription.update({
+    where: { id: third.subscription.id },
+    data: { status: "trial", trialEndsAt: new Date(Date.now() + 5 * 24 * 3600 * 1000) },
+  });
+  await activate(third.subscription.id, paid.id, 1);
+  const kept = await accessFor(bot3.id);
+  check("sinov ichida to'lasa qolgan kunlar yonmaydi", (kept?.daysLeft ?? 0) >= 34, `${kept?.daysLeft} kun (30 + qolgan 5)`);
 
   // expire the trial and walk the lifecycle
   await db.subscription.update({

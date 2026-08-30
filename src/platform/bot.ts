@@ -4,13 +4,14 @@ import { config } from "../config.js";
 import { db } from "../db.js";
 import { fingerprint, seal } from "../lib/crypto.js";
 import { log } from "../lib/log.js";
-import { clearStep, getStep, setStep } from "../lib/state.js";
+import { clearAll, clearStep, getStep, setStep } from "../lib/state.js";
 import { esc, money } from "../lib/telegram.js";
 import { reloadBot, startBot, stopBot } from "../runtime/registry.js";
 import { templateList, templates } from "../templates/index.js";
 import { accessFor, openSubscription } from "../billing/subscription.js";
 import { registerPlatformAdmin } from "./adminpanel.js";
-import { registerPaymentReview, showInvoice, showPlansFor, submitReceipt } from "./payments.js";
+import { registerPaymentReview, showInvoice, showPlansFor, showTerms, submitReceipt } from "./payments.js";
+import { isMenuButton } from "./menu.js";
 import { isAdmin } from "./access.js";
 
 const SCOPE = "platform";
@@ -76,19 +77,25 @@ const HELP =
 export function createPlatformBot(): Bot {
   const bot = new Bot(config.PLATFORM_BOT_TOKEN);
 
-  // Registered first: their middleware must see a message before the generic
-  // text handler below claims it.
+  // Must be the very first middleware: tapping a menu button while inside any
+  // wizard means "leave the wizard", so no later input handler may see it.
+  bot.use(async (ctx, next) => {
+    const text = ctx.message?.text;
+    if (text && ctx.from && isMenuButton(text)) clearAll(ctx.from.id);
+    await next();
+  });
+
   registerPlatformAdmin(bot);
   registerPaymentReview(bot);
 
   bot.command("start", async (ctx) => {
     await ownerOf(ctx);
-    clearStep(SCOPE, ctx.from!.id);
+    clearAll(ctx.from!.id);
     await ctx.reply(WELCOME, { parse_mode: "HTML", reply_markup: mainKeyboard });
   });
 
   bot.command("bekor", async (ctx) => {
-    clearStep(SCOPE, ctx.from!.id);
+    clearAll(ctx.from!.id);
     await ctx.reply("Bekor qilindi.", { reply_markup: mainKeyboard });
   });
 
@@ -349,9 +356,14 @@ export function createPlatformBot(): Bot {
     await showPlansFor(ctx, ctx.match[1]!);
   });
 
-  bot.callbackQuery(/^pay:plan:([^:]+):(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^py:([^:]+):([^:]+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    await showInvoice(ctx, ctx.match[1]!, ctx.match[2]!);
+    await showTerms(ctx, ctx.match[1]!, ctx.match[2]!);
+  });
+
+  bot.callbackQuery(/^pyd:([^:]+):([^:]+):(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showInvoice(ctx, ctx.match[1]!, ctx.match[2]!, Number(ctx.match[3]));
   });
 
   bot.callbackQuery(/^p:text:(.+)$/, async (ctx) => {
