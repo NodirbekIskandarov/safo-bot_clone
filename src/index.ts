@@ -4,6 +4,9 @@ import { resumeBroadcasts } from "./jobs/broadcast.js";
 import { log } from "./lib/log.js";
 import { createPlatformBot } from "./platform/bot.js";
 import { instance, startAll, stopAll } from "./runtime/registry.js";
+import { seedPlans } from "./billing/plans.js";
+import { backfillSubscriptions } from "./billing/subscription.js";
+import { startBillingCron } from "./billing/cron.js";
 
 async function main() {
   if (!config.PLATFORM_BOT_TOKEN) {
@@ -33,8 +36,25 @@ async function main() {
     ])
     .catch(() => {});
 
+  for (const adminId of config.platformAdminIds) {
+    await platform.api
+      .setMyCommands(
+        [
+          { command: "start", description: "Boshlash" },
+          { command: "panel", description: "Boshqaruv paneli" },
+          { command: "yordam", description: "Yordam" },
+          { command: "bekor", description: "Amalni bekor qilish" },
+        ],
+        { scope: { type: "chat", chat_id: Number(adminId) } },
+      )
+      .catch(() => {});
+  }
+
+  await seedPlans();
+  await backfillSubscriptions();
   await startAll();
   await resumeBroadcasts((botId) => instance(botId)?.api);
+  startBillingCron(platform.api);
 
   void platform.start({
     onStart: () => log.info("platform bot started", { username: me.username }),

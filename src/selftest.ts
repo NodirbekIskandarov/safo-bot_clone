@@ -7,6 +7,8 @@ import { randomBytes } from "node:crypto";
 import { db } from "./db.js";
 import { fingerprint, open, seal } from "./lib/crypto.js";
 import { templateList, templates } from "./templates/index.js";
+import { payablePlans, seedPlans } from "./billing/plans.js";
+import { accessFor, activate, billingTick, openSubscription } from "./billing/subscription.js";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -103,6 +105,75 @@ try {
   await db.owner.delete({ where: { id: other.id } }).catch(() => {});
 } catch (err) {
   check("bazaga ulanish", false, String(err));
+}
+
+console.log("\n💳 Billing");
+try {
+  await seedPlans();
+  const plans = await db.plan.findMany();
+  check("8 ta tarif seed qilindi", plans.length === 8, `topildi: ${plans.length}`);
+  check("narxlar butun UZS", plans.every((p) => Number.isInteger(p.priceUzs)));
+
+  const shopPlans = await payablePlans("shop");
+  const kinoPlans = await payablePlans("kino");
+  check("do'kon boti faqat biznes tarifda", shopPlans.every((p) => p.group === "business"), `${shopPlans.length} ta`);
+  check("kino boti barcha pullik tarifda", kinoPlans.length === 7, `${kinoPlans.length} ta`);
+
+  const owner = await db.owner.create({ data: { tgUserId: BigInt(Date.now() + 7), fullName: "billing-test" } });
+  const mk = async (n: number) =>
+    db.bot.create({
+      data: {
+        ownerId: owner.id, templateKey: "kino", title: `b${n}`, tgBotId: BigInt(1000 + n),
+        tgUsername: `b${n}`, tokenCipher: Buffer.from(sealed.cipher), tokenIv: Buffer.from(sealed.iv),
+        tokenTag: Buffer.from(sealed.tag), tokenHash: fingerprint(fakeToken + n), settings: "{}",
+      },
+    });
+
+  const bot1 = await mk(1);
+  const first = await openSubscription(bot1.id, owner.id);
+  check("birinchi bot sinov muddatini oladi", first.trialGranted && first.subscription.status === "trial");
+
+  const bot2 = await mk(2);
+  const second = await openSubscription(bot2.id, owner.id);
+  check("ikkinchi bot sinov olmaydi (trial akkauntga bog'liq)", !second.trialGranted && second.subscription.status === "unpaid");
+
+  const paid = await db.plan.findFirstOrThrow({ where: { code: "std_2k" } });
+  await activate(second.subscription.id, paid.id);
+  const after = await accessFor(bot2.id);
+  check("to'lovdan keyin obuna faollashadi", after?.status === "active" && after.live === true);
+  check("limit tarifdan olinadi", after?.maxBotUsers === 2000, `${after?.maxBotUsers}`);
+  check("muddat ~30 kun", (after?.daysLeft ?? 0) >= 29 && (after?.daysLeft ?? 0) <= 31, `${after?.daysLeft} kun`);
+
+  // paying early must add to the remaining time, not replace it
+  const before = (await db.subscription.findUniqueOrThrow({ where: { id: second.subscription.id } })).currentPeriodEnd!;
+  await activate(second.subscription.id, paid.id);
+  const extended = (await db.subscription.findUniqueOrThrow({ where: { id: second.subscription.id } })).currentPeriodEnd!;
+  check("erta to'lasa kunlar qo'shiladi, yo'qolmaydi", extended.getTime() > before.getTime());
+
+  // expire the trial and walk the lifecycle
+  await db.subscription.update({
+    where: { id: first.subscription.id },
+    data: { trialEndsAt: new Date(Date.now() - 1000) },
+  });
+  const ev1 = await billingTick();
+  check("muddati tugagan sinov grace'ga o'tadi", ev1.some((e) => e.botId === bot1.id && e.kind === "grace"));
+
+  const ev1again = await billingTick();
+  check("cron idempotent (ikkinchi urinishda takrorlamaydi)", !ev1again.some((e) => e.botId === bot1.id && e.kind === "grace"));
+
+  await db.subscription.update({
+    where: { id: first.subscription.id },
+    data: { graceEndsAt: new Date(Date.now() - 1000) },
+  });
+  const ev2 = await billingTick();
+  check("grace tugagach bot to'xtatiladi", ev2.some((e) => e.botId === bot1.id && e.kind === "stopped"));
+
+  const dead = await accessFor(bot1.id);
+  check("to'xtagan obuna live emas", dead?.live === false && dead.status === "expired");
+
+  await db.owner.delete({ where: { id: owner.id } });
+} catch (err) {
+  check("billing oqimi", false, String(err));
 }
 
 await db.$disconnect();

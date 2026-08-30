@@ -6,8 +6,12 @@ import { fingerprint, seal } from "../lib/crypto.js";
 import { log } from "../lib/log.js";
 import { clearStep, getStep, setStep } from "../lib/state.js";
 import { esc } from "../lib/telegram.js";
-import { reloadBot, runningCount, startBot, stopBot } from "../runtime/registry.js";
+import { reloadBot, startBot, stopBot } from "../runtime/registry.js";
 import { templateList, templates } from "../templates/index.js";
+import { accessFor, openSubscription } from "../billing/subscription.js";
+import { registerPlatformAdmin } from "./adminpanel.js";
+import { registerPaymentReview, showInvoice, showPlansFor, submitReceipt } from "./payments.js";
+import { isAdmin } from "./access.js";
 
 const SCOPE = "platform";
 
@@ -66,6 +70,11 @@ const HELP =
 
 export function createPlatformBot(): Bot {
   const bot = new Bot(config.PLATFORM_BOT_TOKEN);
+
+  // Registered first: their middleware must see a message before the generic
+  // text handler below claims it.
+  registerPlatformAdmin(bot);
+  registerPaymentReview(bot);
 
   bot.command("start", async (ctx) => {
     await ownerOf(ctx);
@@ -165,8 +174,27 @@ export function createPlatformBot(): Bot {
     const statusText =
       record.status === "active" ? "🟢 Ishlayapti" : record.status === "error" ? `🔴 Xato` : "⚪️ To'xtatilgan";
 
-    const kb = new InlineKeyboard()
-      .text("✏️ Salomlashuv matni", `p:text:${botId}`)
+    const access = await accessFor(botId);
+    let subLine = "";
+    if (access) {
+      const label: Record<string, string> = {
+        trial: "🎁 Sinov muddati",
+        active: "✅ To'langan",
+        grace: "⚠️ Muddat tugadi",
+        expired: "⛔️ To'lov kerak",
+        unpaid: "⛔️ To'lov kerak",
+      };
+      subLine =
+        `\n💳 Tarif: <b>${esc(access.planName)}</b> — ${label[access.status] ?? access.status}` +
+        (access.daysLeft !== null && access.live ? ` (${access.daysLeft} kun qoldi)` : "") +
+        `\n👤 Limit: ${users}/${access.maxBotUsers} obunachi`;
+    }
+
+    const kb = new InlineKeyboard();
+    if (!access?.live || access.status === "grace" || (access.daysLeft ?? 99) <= 5) {
+      kb.text("💳 To'lov qilish", `p:pay:${botId}`).row();
+    }
+    kb.text("✏️ Salomlashuv matni", `p:text:${botId}`)
       .row()
       .text(record.status === "active" ? "⏸ To'xtatish" : "▶️ Ishga tushirish", `p:toggle:${botId}`)
       .text("🗑 O'chirish", `p:del:${botId}`)
@@ -176,7 +204,7 @@ export function createPlatformBot(): Bot {
     await ctx.editMessageText(
       `${template?.emoji ?? "🤖"} <b>@${esc(record.tgUsername)}</b>\n\n` +
         `Shablon: ${esc(template?.name ?? record.templateKey)}\n` +
-        `Holat: ${statusText}\n` +
+        `Holat: ${statusText}` + subLine + `\n` +
         (record.lastError ? `<i>${esc(record.lastError.slice(0, 120))}</i>\n` : "") +
         `\n👥 Foydalanuvchilar: <b>${users}</b>\n🆕 Bugun: <b>${today}</b>\n\n` +
         `Kontent qo'shish uchun botingizni oching va <code>/admin</code> yuboring.`,
@@ -195,6 +223,14 @@ export function createPlatformBot(): Bot {
       await db.bot.update({ where: { id: botId }, data: { status: "stopped" } });
       await ctx.answerCallbackQuery("To'xtatildi");
     } else {
+      const access = await accessFor(botId);
+      if (access && !access.live) {
+        await ctx.answerCallbackQuery({
+          text: "Obuna muddati tugagan. Avval to'lov qiling.",
+          show_alert: true,
+        });
+        return;
+      }
       const updated = await db.bot.update({
         where: { id: botId },
         data: { status: "active", lastError: null },
@@ -240,6 +276,16 @@ export function createPlatformBot(): Bot {
     log.info("bot deleted", { botId, ownerId: owner.id });
   });
 
+  bot.callbackQuery(/^p:pay:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showPlansFor(ctx, ctx.match[1]!);
+  });
+
+  bot.callbackQuery(/^pay:plan:([^:]+):(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showInvoice(ctx, ctx.match[1]!, ctx.match[2]!);
+  });
+
   bot.callbackQuery(/^p:text:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     setStep(SCOPE, ctx.from!.id, "await_welcome", { botId: ctx.match[1] });
@@ -251,10 +297,21 @@ export function createPlatformBot(): Bot {
 
   // ------------------------------------------------------------ text input
 
+  bot.on("message:photo", async (ctx) => {
+    const photo = ctx.message.photo.at(-1);
+    if (!photo) return;
+    await submitReceipt(ctx, bot.api, { fileId: photo.file_id, text: ctx.message.caption });
+  });
+
   bot.on("message:text", async (ctx) => {
     const state = getStep(SCOPE, ctx.from!.id);
     const text = ctx.message.text.trim();
     if (!state || text.startsWith("/")) return;
+
+    if (state.step === "await_receipt") {
+      await submitReceipt(ctx, bot.api, { text });
+      return;
+    }
 
     if (state.step === "await_welcome") {
       const owner = await ownerOf(ctx);
@@ -328,6 +385,23 @@ export function createPlatformBot(): Bot {
 
     clearStep(SCOPE, ctx.from!.id);
 
+    const { trialGranted } = await openSubscription(record.id, owner.id);
+
+    if (!trialGranted) {
+      // Trial is once per account — a second bot must be paid for up front.
+      await db.bot.update({ where: { id: record.id }, data: { status: "stopped" } });
+      return ctx.api
+        .editMessageText(
+          status.chat.id,
+          status.message_id,
+          `✅ <b>@${esc(me.username ?? "")}</b> yaratildi.\n\n` +
+            `⚠️ Sinov muddatidan bir marta foydalanilgan, shuning uchun bu bot uchun <b>tarif tanlash</b> kerak.\n\n` +
+            `«🤖 Mening botlarim» → botni tanlang → «💳 To'lov qilish»`,
+          { parse_mode: "HTML" },
+        )
+        .then(() => undefined);
+    }
+
     try {
       await startBot(record);
     } catch (err) {
@@ -348,6 +422,7 @@ export function createPlatformBot(): Bot {
       `🎉 <b>Tayyor!</b>\n\n` +
         `${template.emoji} <b>@${esc(me.username ?? "")}</b> ishlay boshladi.\n\n` +
         `👉 https://t.me/${me.username}\n\n` +
+        `🎁 <b>7 kun bepul sinov</b> boshlandi.\n\n` +
         `<b>Keyingi qadam:</b> botingizni oching, <code>/start</code> bosing, keyin <code>/admin</code> yuboring — ` +
         `kontent qo'shish va statistika o'sha yerda.`,
       { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
@@ -357,15 +432,8 @@ export function createPlatformBot(): Bot {
   // ------------------------------------------------------------ platform admin
 
   bot.command("stat", async (ctx) => {
-    const owner = await ownerOf(ctx);
-    if (!owner.isPlatformAdmin) return;
-    const [owners, bots, users] = await Promise.all([db.owner.count(), db.bot.count(), db.botUser.count()]);
-    await ctx.reply(
-      `🛠 <b>Platforma</b>\n\n` +
-        `👤 Ownerlar: <b>${owners}</b>\n🤖 Botlar: <b>${bots}</b> (ishlayapti: ${runningCount()})\n` +
-        `👥 Bot foydalanuvchilari: <b>${users}</b>`,
-      { parse_mode: "HTML" },
-    );
+    if (!(await isAdmin(BigInt(ctx.from!.id)))) return;
+    await ctx.reply("Boshqaruv paneli: /panel");
   });
 
   bot.catch((err) => log.error("platform bot error", { err: err.error }));

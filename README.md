@@ -87,13 +87,91 @@ Platforma boti                      Yaratilgan bot
 
 ---
 
+## To'lov tizimi
+
+Click/Payme emas — **karta orqali qo'lda tasdiqlash**. Yuridik shaxs va shartnoma kerak emas.
+
+```
+Mijoz                                 Siz (admin)
+─────                                 ───────────
+🤖 Mening botlarim → 💳 To'lov
+  → tarif tanlaydi
+  → karta raqami + summa chiqadi
+  → pul o'tkazadi
+  → chek skrinshotini tashlaydi   ──► 🧾 xabar keladi
+                                      ✅ Tasdiqlash / ❌ Rad etish
+  ◄── "to'lov tasdiqlandi"        ◄──  bot darhol ishga tushadi
+```
+
+Karta raqamini `/panel → 💳 Karta` orqali o'rnatasiz — kodga tegmasdan istalgan vaqt o'zgartiriladi.
+
+### Obuna hayot sikli
+
+| Holat | Nima bo'ladi |
+|---|---|
+| `trial` | 7 kun bepul. **Akkauntga bir marta** — ikkinchi bot uchun darhol to'lov kerak |
+| `active` | To'langan, 30 kun |
+| `grace` | Muddat tugadi, bot **hali ishlaydi**, 3 kun muhlat |
+| `expired` | Bot to'xtadi. Ma'lumot saqlanadi — to'lasa qayta ishlaydi |
+
+Har soatda cron tekshiradi va egasiga Telegram orqali xabar yuboradi: 3 kun qolganda,
+muddat tugaganda, bot to'xtaganda. Cron **idempotent** — ikki marta ishlasa ham natija bir xil.
+
+### Cheklovlar qanday majburlanadi
+
+- **Obunachi limiti** — limitga yetganda yangi `/start` qabul qilinmaydi (eskilar ishlayveradi)
+- **Broadcast** — kunlik limit tarifdan olinadi (sinovda 3, Pro'da 20)
+- **Do'kon boti** — faqat biznes tarifda (`orders: true`)
+- **To'lanmagan bot** — restartdan keyin ham ishga tushmaydi
+
+### Tariflar
+
+| code | narx | obunachi | do'kon |
+|---|---|---|---|
+| `trial` | 0 (7 kun) | 100 | ✅ |
+| `std_500` | 15 000 | 500 | ❌ |
+| `std_2k` | 39 000 | 2 000 | ❌ |
+| `std_5k` | 79 000 | 5 000 | ❌ |
+| `std_15k` | 149 000 | 15 000 | ❌ |
+| `std_50k` | 299 000 | 50 000 | ❌ |
+| `biz_start` | 199 000 | 3 000 | ✅ |
+| `biz_pro` | 399 000 | 10 000 | ✅ |
+
+Narxlar `src/billing/plans.ts` da. **Narx o'zgartirilsa eski mijozlar eski narxda qoladi** —
+seed narxni qayta yozmaydi.
+
+---
+
+## Adminlar
+
+| | |
+|---|---|
+| **Asosiy admin** | `.env` dagi `PLATFORM_ADMIN_IDS`. Bot orqali olib bo'lmaydi |
+| **Qo'shilgan admin** | `/panel → 👑 Adminlar → ➕`. To'liq huquqli — **o'zi ham yangi admin qo'sha oladi** |
+
+Admin huquqlari: to'lovlarni tasdiqlash, karta o'zgartirish, statistika, barcha botlar ro'yxati,
+admin qo'shish/olib tashlash. Har bir amal `AuditLog` ga yoziladi.
+
+Platforma adminlarining **o'z botlari bepul** — obuna ularga tegmaydi.
+
+---
+
 ## Arxitektura
 
 ```
 src/
 ├── index.ts              bootstrap: platforma boti + barcha tenant botlar
 ├── config.ts             .env validatsiyasi (zod)
-├── platform/bot.ts       bot yaratish sehrgari, "mening botlarim"
+├── platform/
+│   ├── bot.ts            bot yaratish sehrgari, "mening botlarim"
+│   ├── payments.ts       karta to'lovi + admin tasdiqlash
+│   ├── adminpanel.ts     /panel — to'lovlar, adminlar, karta, statistika
+│   ├── access.ts         admin huquqlari, audit
+│   └── settings.ts       karta raqami kabi sozlamalar (DB'da)
+├── billing/
+│   ├── plans.ts          tariflar katalogi
+│   ├── subscription.ts   obuna hayot sikli
+│   └── cron.ts           soatlik tekshiruv + ogohlantirish
 ├── runtime/
 │   ├── registry.ts       tenant botlarni ishga tushirish/to'xtatish
 │   ├── admin.ts          har bir botdagi umumiy admin panel

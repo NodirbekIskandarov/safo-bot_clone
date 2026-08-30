@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { open } from "../lib/crypto.js";
 import { log } from "../lib/log.js";
 import { templates } from "../templates/index.js";
+import { accessFor } from "../billing/subscription.js";
 import type { AppBot, BotCtx } from "./context.js";
 
 interface Entry {
@@ -53,6 +54,25 @@ export async function startBot(record: BotRecord): Promise<void> {
     ctx.botTitle = record.title;
     ctx.settings = settings;
     ctx.isAdmin = adminIds.includes(BigInt(from.id));
+
+    // Plan limit: existing subscribers keep working, new ones are turned away
+    // so the owner has a concrete reason to upgrade.
+    const known = await db.botUser.findUnique({
+      where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
+      select: { id: true },
+    });
+    if (!known && !ctx.isAdmin) {
+      const access = await accessFor(record.id);
+      if (access) {
+        const count = await db.botUser.count({ where: { botId: record.id } });
+        if (count >= access.maxBotUsers) {
+          await ctx
+            .reply("⚠️ Bot hozircha yangi foydalanuvchi qabul qila olmayapti. Keyinroq urinib ko'ring.")
+            .catch(() => {});
+          return;
+        }
+      }
+    }
 
     ctx.appUser = await db.botUser.upsert({
       where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
@@ -125,6 +145,13 @@ export async function reloadBot(botId: string): Promise<void> {
 export async function startAll(): Promise<void> {
   const records = await db.bot.findMany({ where: { status: "active" } });
   for (const record of records) {
+    // A lapsed subscription must not come back to life on restart.
+    const access = await accessFor(record.id);
+    if (access && !access.live) {
+      await db.bot.update({ where: { id: record.id }, data: { status: "stopped" } });
+      log.info("bot left stopped: subscription lapsed", { botId: record.id });
+      continue;
+    }
     try {
       await startBot(record);
     } catch (err) {

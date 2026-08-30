@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { createBroadcast, runBroadcast } from "../jobs/broadcast.js";
 import { clearStep, getStep, setStep } from "../lib/state.js";
 import { esc } from "../lib/telegram.js";
+import { accessFor } from "../billing/subscription.js";
 import type { AppBot, BotCtx } from "./context.js";
 
 export interface AdminItem {
@@ -113,8 +114,22 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
   });
 
   bot.callbackQuery("adm:bc", async (ctx) => {
+    if (!ctx.isAdmin) return void ctx.answerCallbackQuery();
+
+    const access = await accessFor(ctx.botId);
+    if (access) {
+      const since = new Date();
+      since.setHours(0, 0, 0, 0);
+      const usedToday = await db.broadcast.count({ where: { botId: ctx.botId, createdAt: { gte: since } } });
+      if (usedToday >= access.features.broadcastDailyLimit) {
+        return void ctx.answerCallbackQuery({
+          text: `Bugungi limit tugadi (${access.features.broadcastDailyLimit} ta). Tarifni oshiring.`,
+          show_alert: true,
+        });
+      }
+    }
+
     await ctx.answerCallbackQuery();
-    if (!ctx.isAdmin) return;
     setStep(SCOPE, ctx.from!.id, "await_content");
     await ctx.editMessageText(
       `📢 <b>Xabar yuborish</b>\n\n` +

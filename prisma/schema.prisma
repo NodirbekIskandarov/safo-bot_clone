@@ -20,10 +20,16 @@ model Owner {
   fullName    String
   locale      String   @default("uz")
   isPlatformAdmin Boolean @default(false)
-  status      String   @default("active") // active | suspended
+  adminAddedBy BigInt?                     // who promoted this admin
+  adminAddedAt DateTime?
+  trialUsedAt DateTime?                    // trial is account-bound, granted once
+  status      String   @default("active")  // active | suspended
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  bots        Bot[]
+
+  bots          Bot[]
+  subscriptions Subscription[]
+  payments      Payment[]
 }
 
 model Bot {
@@ -55,6 +61,7 @@ model Bot {
   products     Product[]
   orders       Order[]
   surveys      Survey[]
+  subscription Subscription?
 
   @@index([ownerId, status])
 }
@@ -259,4 +266,88 @@ model SurveyResponse {
   completedAt DateTime @default(now())
 
   @@index([surveyId, completedAt])
+}
+
+
+// ---------------------------------------------------------------- billing
+
+model Plan {
+  id           String   @id @default(uuid())
+  code         String   @unique
+  name         String
+  group        String                        // trial | standard | business
+  priceUzs     Int
+  intervalDays Int      @default(30)
+  maxBotUsers  Int
+  features     String   @default("{}")       // JSON
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  isArchived   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions Subscription[]
+  payments      Payment[]
+}
+
+model Subscription {
+  id                 String    @id @default(uuid())
+  botId              String    @unique         // billing is per bot
+  bot                Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  ownerId            String
+  owner              Owner     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  planId             String
+  plan               Plan      @relation(fields: [planId], references: [id])
+  status             String                    // trial | active | grace | expired | unpaid
+  trialEndsAt        DateTime?
+  currentPeriodEnd   DateTime?
+  graceEndsAt        DateTime?
+  warnedAt           DateTime?                 // last expiry warning, keeps cron idempotent
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  payments Payment[]
+
+  @@index([status, currentPeriodEnd])
+  @@index([status, graceEndsAt])
+}
+
+model Payment {
+  id             String    @id @default(uuid())
+  reference      String    @unique            // short human code shown to the payer
+  ownerId        String
+  owner          Owner     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  planId         String
+  plan           Plan      @relation(fields: [planId], references: [id])
+  amountUzs      Int
+  status         String    @default("pending") // pending | approved | rejected
+  receiptFileId  String?                       // screenshot of the transfer
+  receiptText    String?
+  reviewedBy     BigInt?
+  reviewedAt     DateTime?
+  note           String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([ownerId, status])
+}
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorTgId BigInt
+  action    String                            // payment.approve | admin.add | admin.remove | bot.stop
+  target    String?
+  meta      String?                           // JSON
+  createdAt DateTime @default(now())
+
+  @@index([action, createdAt])
 }
