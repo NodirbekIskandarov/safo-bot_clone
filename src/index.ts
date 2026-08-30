@@ -24,6 +24,15 @@ async function main() {
   const platform = createPlatformBot();
   const me = await platform.api.getMe();
 
+  // The blue "Menu" button in Telegram — without this users must guess commands.
+  await platform.api
+    .setMyCommands([
+      { command: "start", description: "Boshlash" },
+      { command: "yordam", description: "Yordam" },
+      { command: "bekor", description: "Amalni bekor qilish" },
+    ])
+    .catch(() => {});
+
   await startAll();
   await resumeBroadcasts((botId) => instance(botId)?.api);
 

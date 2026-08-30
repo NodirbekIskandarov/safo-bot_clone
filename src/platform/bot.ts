@@ -79,6 +79,7 @@ export function createPlatformBot(): Bot {
   });
 
   bot.hears("❓ Yordam", (ctx) => ctx.reply(HELP, { parse_mode: "HTML" }));
+  bot.command("yordam", (ctx) => ctx.reply(HELP, { parse_mode: "HTML" }));
 
   // ------------------------------------------------------------- create bot
 
