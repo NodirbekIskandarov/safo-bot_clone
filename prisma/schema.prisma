@@ -1,0 +1,262 @@
+// BotBuilder — multi-tenant Telegram bot platform
+// SQLite for zero-dependency operation. Switch `provider` to "postgresql"
+// and re-run migrations to move to Postgres — no application code changes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- platform
+
+model Owner {
+  id          String   @id @default(uuid())
+  tgUserId    BigInt   @unique
+  username    String?
+  fullName    String
+  locale      String   @default("uz")
+  isPlatformAdmin Boolean @default(false)
+  status      String   @default("active") // active | suspended
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  bots        Bot[]
+}
+
+model Bot {
+  id           String   @id @default(uuid())
+  ownerId      String
+  owner        Owner    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  templateKey  String                       // kino | shop | broadcast | survey
+  title        String
+  tgBotId      BigInt
+  tgUsername   String
+  tokenCipher  Bytes                        // AES-256-GCM
+  tokenIv      Bytes
+  tokenTag     Bytes
+  tokenHash    String   @unique             // sha256(token) — duplicate detection
+  keyVersion   Int      @default(1)
+  adminIds     String   @default("[]")      // JSON: BigInt[] as strings
+  status       String   @default("active")  // active | stopped | error
+  lastError    String?
+  settings     String   @default("{}")      // JSON, validated by template schema
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users        BotUser[]
+  events       BotEvent[]
+  movies       Movie[]
+  channels     RequiredChannel[]
+  broadcasts   Broadcast[]
+  categories   Category[]
+  products     Product[]
+  orders       Order[]
+  surveys      Survey[]
+
+  @@index([ownerId, status])
+}
+
+model BotUser {
+  id           String   @id @default(uuid())
+  botId        String
+  bot          Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  tgUserId     BigInt
+  username     String?
+  firstName    String?
+  languageCode String?
+  status       String   @default("active")  // active | blocked_by_user | banned | unsubscribed
+  isAdmin      Boolean  @default(false)
+  joinedAt     DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+
+  broadcastTargets BroadcastTarget[]
+  orders           Order[]
+  surveyResponses  SurveyResponse[]
+  events           BotEvent[]
+
+  @@unique([botId, tgUserId])
+  @@index([botId, joinedAt])
+  @@index([botId, status])
+}
+
+model BotEvent {
+  id        String   @id @default(uuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  botUserId String?
+  botUser   BotUser? @relation(fields: [botUserId], references: [id], onDelete: SetNull)
+  type      String
+  payload   String?                          // JSON
+  createdAt DateTime @default(now())
+
+  @@index([botId, type, createdAt])
+}
+
+// ---------------------------------------------------------------- broadcast
+
+model Broadcast {
+  id          String   @id @default(uuid())
+  botId       String
+  bot         Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  createdBy   BigInt
+  content     String                          // JSON: { kind, text, fileId, buttons }
+  status      String   @default("draft")      // draft | running | paused | done | canceled
+  totalCount  Int      @default(0)
+  sentCount   Int      @default(0)
+  failedCount Int      @default(0)
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  targets     BroadcastTarget[]
+
+  @@index([botId, status])
+}
+
+model BroadcastTarget {
+  id          String    @id @default(uuid())
+  broadcastId String
+  broadcast   Broadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  botUserId   String
+  botUser     BotUser   @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  status      String    @default("pending")   // pending | sent | failed | blocked
+  error       String?
+  sentAt      DateTime?
+
+  @@unique([broadcastId, botUserId])
+  @@index([broadcastId, status])
+}
+
+// ---------------------------------------------------------------- kino
+
+model Movie {
+  id        String   @id @default(uuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  code      String
+  title     String
+  caption   String?
+  fileId    String                            // bot-specific! never share across bots
+  fileType  String                            // video | document | animation
+  views     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([botId, code])
+  @@index([botId, title])
+}
+
+model RequiredChannel {
+  id        String   @id @default(uuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  chatId    BigInt
+  title     String
+  inviteUrl String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@unique([botId, chatId])
+}
+
+// ---------------------------------------------------------------- shop
+
+model Category {
+  id        String    @id @default(uuid())
+  botId     String
+  bot       Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  title     String
+  sortOrder Int       @default(0)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  products  Product[]
+
+  @@index([botId, sortOrder])
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  botId       String
+  bot         Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  title       String
+  description String?
+  priceUzs    Int                              // integer UZS, never tiyin
+  photoFileId String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([botId, isActive])
+}
+
+model Order {
+  id            String   @id @default(uuid())
+  botId         String
+  bot           Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  botUserId     String
+  botUser       BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  number        Int
+  items         String                          // JSON snapshot: [{title, priceUzs, qty}]
+  totalUzs      Int
+  deliveryType  String                          // pickup | delivery
+  address       String?
+  phone         String
+  comment       String?
+  paymentMethod String   @default("cash")
+  status        String   @default("new")        // new | confirmed | delivering | done | canceled
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([botId, number])
+  @@index([botId, status, createdAt])
+}
+
+// ---------------------------------------------------------------- survey
+
+model Survey {
+  id        String   @id @default(uuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  title     String
+  isActive  Boolean  @default(true)
+  multiple  Boolean  @default(false)           // allow repeated submissions
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  questions SurveyQuestion[]
+  responses SurveyResponse[]
+
+  @@index([botId, isActive])
+}
+
+model SurveyQuestion {
+  id       String @id @default(uuid())
+  surveyId String
+  survey   Survey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  order    Int
+  type     String                                // text | number | phone | choice
+  prompt   String
+  options  String @default("[]")                 // JSON string[]
+
+  @@unique([surveyId, order])
+}
+
+model SurveyResponse {
+  id          String   @id @default(uuid())
+  surveyId    String
+  survey      Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  botUserId   String
+  botUser     BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  answers     String                              // JSON
+  completedAt DateTime @default(now())
+
+  @@index([surveyId, completedAt])
+}
