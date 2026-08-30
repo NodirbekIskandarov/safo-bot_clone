@@ -5,7 +5,7 @@ import { db } from "../db.js";
 import { fingerprint, seal } from "../lib/crypto.js";
 import { log } from "../lib/log.js";
 import { clearStep, getStep, setStep } from "../lib/state.js";
-import { esc } from "../lib/telegram.js";
+import { esc, money } from "../lib/telegram.js";
 import { reloadBot, startBot, stopBot } from "../runtime/registry.js";
 import { templateList, templates } from "../templates/index.js";
 import { accessFor, openSubscription } from "../billing/subscription.js";
@@ -19,6 +19,8 @@ const mainKeyboard = new Keyboard()
   .text("➕ Bot yaratish")
   .row()
   .text("🤖 Mening botlarim")
+  .text("💳 Tariflar")
+  .row()
   .text("❓ Yordam")
   .resized();
 
@@ -65,7 +67,10 @@ const HELP =
   `<b>3. Token xavfsizmi?</b>\n` +
   `Token shifrlangan holda saqlanadi va hech qayerda ko'rsatilmaydi. Siz yuborgan xabar ` +
   `darhol o'chiriladi.\n\n` +
-  `<b>4. Botni o'chirsam nima bo'ladi?</b>\n` +
+  `<b>4. Necha pul turadi?</b>\n` +
+  `Birinchi bot <b>7 kun bepul</b> ishlaydi — karta talab qilinmaydi. Keyin tarif tanlaysiz, ` +
+  `narxlar «💳 Tariflar» bo'limida. To'lov karta orqali, chekni botga tashlaysiz.\n\n` +
+  `<b>5. Botni o'chirsam nima bo'ladi?</b>\n` +
   `Bot va uning barcha ma'lumotlari (foydalanuvchilar, kinolar, buyurtmalar) o'chadi. Bu qaytarilmaydi.`;
 
 export function createPlatformBot(): Bot {
@@ -125,6 +130,67 @@ export function createPlatformBot(): Bot {
   });
 
   // -------------------------------------------------------------- my bots
+
+  bot.hears("💳 Tariflar", (ctx) => showTariffs(ctx));
+  bot.callbackQuery("p:tariffs", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showTariffs(ctx, true);
+  });
+
+  async function showTariffs(ctx: Context, edit = false) {
+    const plans = await db.plan.findMany({
+      where: { isActive: true, isArchived: false },
+      orderBy: { sortOrder: "asc" },
+    });
+
+    const line = (p: (typeof plans)[number]) => {
+      const f = JSON.parse(p.features) as { orders: boolean; broadcastDailyLimit: number };
+      const price = p.priceUzs === 0 ? "<b>bepul</b>" : `<b>${money(p.priceUzs)}</b>`;
+      const days = p.priceUzs === 0 ? `${p.intervalDays} kun` : "oyiga";
+      return (
+        `${esc(p.name)} — ${price} / ${days}\n` +
+        `   👥 ${p.maxBotUsers.toLocaleString("ru-RU").replace(/,/g, " ")} obunachi · ` +
+        `📢 ${f.broadcastDailyLimit} xabar/kun${f.orders ? " · 🛒 do'kon" : ""}`
+      );
+    };
+
+    const group = (g: string) => plans.filter((p) => p.group === g).map(line).join("\n\n");
+
+    const text =
+      `💳 <b>Tariflar</b>\n\n` +
+      `🎁 <b>Sinov</b>\n${group("trial")}\n` +
+      `<i>Har bir akkauntga bir marta beriladi.</i>\n\n` +
+      `━━━━━━━━━━━━━━\n\n` +
+      `📣 <b>Kontent botlari</b> <i>(kino, reklama, anketa)</i>\n\n${group("standard")}\n\n` +
+      `━━━━━━━━━━━━━━\n\n` +
+      `🛒 <b>Biznes botlari</b> <i>(do'kon — buyurtma qabul qilish)</i>\n\n${group("business")}\n\n` +
+      `━━━━━━━━━━━━━━\n\n` +
+      `To'lov karta orqali. Chekni yuborasiz, admin tasdiqlaydi — bot darhol ishlaydi.`;
+
+    const kb = new InlineKeyboard().text("💳 To'lov qilish", "p:paypick");
+    if (edit) await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+    else await ctx.reply(text, { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  bot.callbackQuery("p:paypick", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const owner = await ownerOf(ctx);
+    const bots = await db.bot.findMany({ where: { ownerId: owner.id }, orderBy: { createdAt: "asc" } });
+
+    if (bots.length === 0) {
+      return void ctx
+        .editMessageText("Avval bot yarating — «➕ Bot yaratish».", {
+          reply_markup: new InlineKeyboard().text("◀️ Tariflar", "p:tariffs"),
+        })
+        .catch(() => {});
+    }
+    if (bots.length === 1) return showPlansFor(ctx, bots[0]!.id);
+
+    const kb = new InlineKeyboard();
+    for (const b of bots) kb.text(`@${b.tgUsername}`, `p:pay:${b.id}`).row();
+    kb.text("◀️ Orqaga", "p:tariffs");
+    await ctx.editMessageText("Qaysi bot uchun to'lov qilasiz?", { reply_markup: kb });
+  });
 
   bot.hears("🤖 Mening botlarim", (ctx) => listBots(ctx));
 
@@ -191,8 +257,10 @@ export function createPlatformBot(): Bot {
     }
 
     const kb = new InlineKeyboard();
-    if (!access?.live || access.status === "grace" || (access.daysLeft ?? 99) <= 5) {
-      kb.text("💳 To'lov qilish", `p:pay:${botId}`).row();
+    if (access && access.status !== "staff") {
+      const label =
+        access.status === "active" ? "💳 Muddatni uzaytirish" : "💳 To'lov qilish";
+      kb.text(label, `p:pay:${botId}`).row();
     }
     kb.text("✏️ Salomlashuv matni", `p:text:${botId}`)
       .row()
@@ -395,9 +463,11 @@ export function createPlatformBot(): Bot {
           status.chat.id,
           status.message_id,
           `✅ <b>@${esc(me.username ?? "")}</b> yaratildi.\n\n` +
-            `⚠️ Sinov muddatidan bir marta foydalanilgan, shuning uchun bu bot uchun <b>tarif tanlash</b> kerak.\n\n` +
-            `«🤖 Mening botlarim» → botni tanlang → «💳 To'lov qilish»`,
-          { parse_mode: "HTML" },
+            `⚠️ Sinov muddatidan bir marta foydalanilgan, shuning uchun bu bot uchun <b>tarif tanlash</b> kerak.`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard().text("💳 Tarif tanlash", `p:pay:${record.id}`),
+          },
         )
         .then(() => undefined);
     }

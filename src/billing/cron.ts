@@ -1,3 +1,4 @@
+import { InlineKeyboard } from "grammy";
 import type { Api } from "grammy";
 import { db } from "../db.js";
 import { log } from "../lib/log.js";
@@ -27,7 +28,12 @@ async function tick(api: Api) {
             : `⛔️ <b>Bot to'xtatildi</b>\n\n@${e.botUsername} obunasi to'lanmadi.\n\n` +
               `Ma'lumotlaringiz saqlanib turibdi — to'lov qilsangiz bot o'sha zahoti qayta ishlaydi.`;
 
-      await sendSafe(() => api.sendMessage(Number(e.ownerTgId), text, { parse_mode: "HTML" }));
+      await sendSafe(() =>
+        api.sendMessage(Number(e.ownerTgId), text, {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard().text("💳 To'lov qilish", `p:pay:${e.botId}`),
+        }),
+      );
     }
   } catch (err) {
     log.error("billing tick failed", { err });
