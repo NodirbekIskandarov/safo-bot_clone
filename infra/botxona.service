@@ -1,0 +1,23 @@
+[Unit]
+Description=Botxona — Telegram bot builder platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/botxona
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+User=root
+Environment=NODE_ENV=production
+
+# Long polling reconnects on its own; give it room to settle before a restart.
+StartLimitBurst=10
+StartLimitIntervalSec=120
+
+StandardOutput=append:/var/log/botxona.log
+StandardError=append:/var/log/botxona.log
+
+[Install]
+WantedBy=multi-user.target
