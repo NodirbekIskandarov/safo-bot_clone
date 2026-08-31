@@ -121,10 +121,21 @@ export async function startBot(record: BotRecord): Promise<void> {
 
   // Long polling: no domain, TLS or tunnel required. Swap to webhooks by
   // replacing this call with bot.api.setWebhook + a webhook receiver.
-  void bot.start({
-    onStart: () => log.info("bot started", { botId: record.id, username: record.tgUsername }),
-    drop_pending_updates: false,
-  });
+  // A revoked token fails inside start(); park the bot instead of letting the
+  // rejection escape and retry forever.
+  bot
+    .start({
+      onStart: () => log.info("bot started", { botId: record.id, username: record.tgUsername }),
+      drop_pending_updates: false,
+    })
+    .catch(async (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("bot polling stopped", { botId: record.id, message });
+      running.delete(record.id);
+      await db.bot
+        .update({ where: { id: record.id }, data: { status: "error", lastError: message.slice(0, 200) } })
+        .catch(() => {});
+    });
 
   running.set(record.id, { bot, record });
 }
