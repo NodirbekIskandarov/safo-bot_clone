@@ -4,6 +4,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -38,7 +39,8 @@ export const contestTemplate: BotTemplate = {
   description:
     "Foydalanuvchilar tugma bosib ishtirok etadi, har biriga bilet raqami beriladi. Kanalga majburiy " +
     "obuna qo'ysangiz — avval obuna bo'lishadi. G'olib tasodifiy tanlanadi va hammaga e'lon qilinadi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["🎯 Ishtirok etish"], ["🏆 Natijalar"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "ishtirok", description: "Ishtirok etish" },
@@ -61,6 +63,9 @@ export const contestTemplate: BotTemplate = {
           : "Hozircha faol konkurs yo'q. Kuzatib boring 🙌";
 
       await ctx.reply(body, { parse_mode: "HTML", reply_markup: kb });
+      await ctx.reply("Quyidagi tugmalardan foydalaning 👇", {
+        reply_markup: await mainKeyboard(ctx, [["🎯 Ishtirok etish"], ["🏆 Natijalar"]]),
+      });
     });
 
     bot.callbackQuery("ct:join", async (ctx) => {
@@ -99,6 +104,38 @@ export const contestTemplate: BotTemplate = {
           `Bilet raqamingiz: <b>#${entry.ticketNo}</b>\n` +
           `Ishtirokchilar: ${count + 1}\n\n` +
           `Natijani shu botda e'lon qilamiz. Omad! 🍀`,
+        { parse_mode: "HTML" },
+      );
+    });
+
+    bot.hears("🎯 Ishtirok etish", async (ctx) => {
+      const contest = await currentContest(ctx.botId);
+      if (!contest) return ctx.reply("Hozircha faol konkurs yo'q.");
+      await ctx.reply(`🎁 <b>${esc(contest.title)}</b>`, {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("🎯 Ishtirok etish", "ct:join"),
+      });
+    });
+
+    bot.hears("🏆 Natijalar", async (ctx) => {
+      const last = await db.contest.findFirst({
+        where: { botId: ctx.botId },
+        orderBy: { createdAt: "desc" },
+        include: { entries: { where: { isWinner: true }, include: { botUser: true } } },
+      });
+      if (!last) return ctx.reply("Hali konkurs o'tkazilmagan.");
+      if (last.status !== "finished") {
+        const count = await db.contestEntry.count({ where: { contestId: last.id } });
+        return ctx.reply(
+          `🎁 <b>${esc(last.title)}</b>\n\nKonkurs davom etmoqda.\n👥 Ishtirokchilar: <b>${count}</b>`,
+          { parse_mode: "HTML" },
+        );
+      }
+      const winners = last.entries
+        .map((w, i) => `${i + 1}. ${esc(w.botUser.firstName ?? "")} — bilet #${w.ticketNo}`)
+        .join("\n");
+      await ctx.reply(
+        `🏆 <b>${esc(last.title)} — natijalar</b>\n\n${winners || "G'olib aniqlanmagan."}`,
         { parse_mode: "HTML" },
       );
     });

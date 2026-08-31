@@ -5,6 +5,8 @@ import { clearStep, getStep, setStep } from "../lib/state.js";
 import { esc } from "../lib/telegram.js";
 import { accessFor } from "../billing/subscription.js";
 import { config } from "../config.js";
+import { ADMIN_BUTTON, isReservedLabel } from "./keyboard.js";
+import { templates } from "../templates/index.js";
 import type { AppBot, BotCtx } from "./context.js";
 
 export interface AdminItem {
@@ -94,6 +96,12 @@ async function users(ctx: BotCtx) {
  */
 export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
   bot.command("admin", async (ctx) => {
+    if (!ctx.isAdmin) return;
+    clearStep(SCOPE, ctx.from!.id);
+    await showMenu(ctx, extra);
+  });
+
+  bot.hears(ADMIN_BUTTON, async (ctx) => {
     if (!ctx.isAdmin) return;
     clearStep(SCOPE, ctx.from!.id);
     await showMenu(ctx, extra);
@@ -201,6 +209,14 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
   bot.use(async (ctx, next) => {
     const state = ctx.from && ctx.isAdmin ? getStep(SCOPE, ctx.from.id) : undefined;
     if (!state || state.step !== "await_content" || !ctx.message) return next();
+
+    // A menu tap means "leave this wizard", not "broadcast this text".
+    const rows = templates[ctx.templateKey]?.menuButtons ?? [];
+    const label = ctx.message.text ?? "";
+    if (label && isReservedLabel(label, rows)) {
+      clearStep(SCOPE, ctx.from!.id);
+      return next();
+    }
 
     const count = await db.botUser.count({ where: { botId: ctx.botId, status: "active" } });
     setStep(SCOPE, ctx.from!.id, "confirm", { fromChatId: ctx.chat!.id });

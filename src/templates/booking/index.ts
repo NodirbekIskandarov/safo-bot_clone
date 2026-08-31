@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -39,7 +40,8 @@ export const bookingTemplate: BotTemplate = {
   description:
     "Sartaroshxona, klinika, avtoyuvish, ustaxona uchun. Mijoz xizmat turini, kunni va soatni " +
     "tanlaydi, telefonini qoldiradi. Sizga xabar keladi, bir tugmada tasdiqlaysiz. Band vaqtlar ko'rinmaydi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME, services: DEFAULT_SERVICES },
+  defaultSettings: { welcome: DEFAULT_WELCOME, services: DEFAULT_SERVICES },  menuButtons: [["📅 Navbat olish", "🗓 Mening navbatlarim"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "navbat", description: "Navbat olish" },
@@ -47,11 +49,10 @@ export const bookingTemplate: BotTemplate = {
   ],
 
   register({ bot }: TemplateContext) {
-    const mainKb = new Keyboard().text("📅 Navbat olish").text("🗓 Mening navbatlarim").resized();
-
     bot.command("start", async (ctx) => {
-      await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, { reply_markup: mainKb });
-      if (ctx.isAdmin) await ctx.reply("Admin panel: /admin");
+      await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, {
+        reply_markup: await mainKeyboard(ctx, bookingTemplate.menuButtons),
+      });
     });
 
     bot.hears("📅 Navbat olish", async (ctx) => {
@@ -177,7 +178,7 @@ export const bookingTemplate: BotTemplate = {
       await ctx.reply(
         `✅ <b>Navbat olindi!</b>\n\n#${booking.number}\n💈 ${esc(booking.service)}\n📅 ${when}\n\n` +
           `Tasdiqlangach xabar beramiz.`,
-        { parse_mode: "HTML", reply_markup: mainKb },
+        { parse_mode: "HTML", reply_markup: await mainKeyboard(ctx, bookingTemplate.menuButtons) },
       );
 
       const admins = await db.botUser.findMany({ where: { botId: ctx.botId, isAdmin: true } });

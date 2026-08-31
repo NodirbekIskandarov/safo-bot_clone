@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -81,7 +82,8 @@ export const kinoTemplate: BotTemplate = {
   description:
     "Siz botga video yuklab, unga kod berasiz (masalan 100). Foydalanuvchi shu kodni yozsa — kino " +
     "darhol jo'natiladi. Majburiy obuna qo'ysangiz, kino olishdan oldin kanalingizga obuna bo'lishadi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["🎬 Kinolar ro'yxati"], ["ℹ️ Qanday ishlaydi"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "qidir", description: "Kino qidirish" },
@@ -93,7 +95,7 @@ export const kinoTemplate: BotTemplate = {
       if (missing.length > 0) return askToSubscribe(ctx, missing);
 
       await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, {
-        reply_markup: ctx.isAdmin ? new InlineKeyboard().text("⚙️ Admin panel", "adm:menu") : undefined,
+        reply_markup: await mainKeyboard(ctx, [["🎬 Kinolar ro'yxati"], ["ℹ️ Qanday ishlaydi"]]),
       });
       await db.botEvent.create({ data: { botId: ctx.botId, botUserId: ctx.appUser.id, type: "start" } });
     });
@@ -183,6 +185,32 @@ export const kinoTemplate: BotTemplate = {
     bot.command("bekor", async (ctx) => {
       clearStep(SCOPE, ctx.from!.id);
     });
+
+    bot.hears("🎬 Kinolar ro'yxati", async (ctx) => {
+      const movies = await db.movie.findMany({
+        where: { botId: ctx.botId, isActive: true },
+        orderBy: { views: "desc" },
+        take: 30,
+      });
+      if (movies.length === 0) return ctx.reply("Hozircha kino qo'shilmagan.");
+      const lines = movies.map((m) => `<code>${esc(m.code)}</code> — ${esc(m.title)}`);
+      await ctx.reply(
+        `🎬 <b>Kinolar (${movies.length})</b>\n\n${lines.join("\n")}\n\n` +
+          `<i>Kodni yuboring — kino keladi.</i>`,
+        { parse_mode: "HTML" },
+      );
+    });
+
+    bot.hears("ℹ️ Qanday ishlaydi", (ctx) =>
+      ctx.reply(
+        `ℹ️ <b>Qanday ishlaydi</b>\n\n` +
+          `1. «🎬 Kinolar ro'yxati» dan kerakli kinoning <b>kodini</b> toping\n` +
+          `2. Kodni shu yerga yuboring\n` +
+          `3. Kino darhol keladi\n\n` +
+          `<i>Kod odatda raqam bo'ladi, masalan 100.</i>`,
+        { parse_mode: "HTML" },
+      ),
+    );
 
     // ------------------------------------------------------- admin wizards
 

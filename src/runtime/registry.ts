@@ -52,6 +52,7 @@ export async function startBot(record: BotRecord): Promise<void> {
 
     ctx.botId = record.id;
     ctx.botTitle = record.title;
+    ctx.templateKey = record.templateKey;
     ctx.settings = settings;
     ctx.isAdmin = adminIds.includes(BigInt(from.id));
 

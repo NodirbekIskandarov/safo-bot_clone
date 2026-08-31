@@ -2,6 +2,7 @@ import { InlineKeyboard } from "grammy";
 import { db } from "../../db.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -16,7 +17,8 @@ export const broadcastTemplate: BotTemplate = {
   description:
     "Foydalanuvchilar botga /start bosadi va obunachiga aylanadi. Siz istalgan vaqtda hammasiga " +
     "matn, rasm, video yoki fayl yuborasiz. Kim bloklagani, kimga yetib borgani hisobot bo'lib qaytadi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["ℹ️ Ma'lumot"], ["🔕 Obunani bekor qilish"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "stop", description: "Obunani bekor qilish" },
@@ -25,9 +27,7 @@ export const broadcastTemplate: BotTemplate = {
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
       const welcome = (ctx.settings.welcome as string) || DEFAULT_WELCOME;
-      await ctx.reply(welcome, {
-        reply_markup: ctx.isAdmin ? new InlineKeyboard().text("⚙️ Admin panel", "adm:menu") : undefined,
-      });
+      await ctx.reply(welcome, { reply_markup: await mainKeyboard(ctx, [["ℹ️ Ma'lumot"], ["🔕 Obunani bekor qilish"]]) });
       await db.botEvent.create({ data: { botId: ctx.botId, botUserId: ctx.appUser.id, type: "start" } });
     });
 
@@ -52,8 +52,19 @@ export const broadcastTemplate: BotTemplate = {
       },
     ]);
 
-    bot.on("message", async (ctx) => {
-      if (ctx.isAdmin) return;
+    bot.hears("ℹ️ Ma'lumot", (ctx) =>
+      ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME),
+    );
+
+    bot.hears("🔕 Obunani bekor qilish", async (ctx) => {
+      await db.botUser.update({ where: { id: ctx.appUser.id }, data: { status: "unsubscribed" } });
+      await ctx.reply("Obuna bekor qilindi. Qaytish uchun /start bosing.", {
+        reply_markup: { remove_keyboard: true },
+      });
+    });
+
+    bot.on("message", async (ctx, next) => {
+      if (ctx.isAdmin) return next();
       await ctx.reply("Xabaringiz uchun rahmat! Yangiliklarni kuting 🙌");
     });
   },

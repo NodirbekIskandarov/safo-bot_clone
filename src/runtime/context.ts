@@ -4,6 +4,7 @@ import type { BotUser } from "@prisma/client";
 export interface AppFlavor {
   botId: string;
   botTitle: string;
+  templateKey: string;
   settings: Record<string, unknown>;
   appUser: BotUser;
   isAdmin: boolean;
@@ -29,6 +30,8 @@ export interface BotTemplate {
   defaultSettings: Record<string, unknown>;
   /** Shown in Telegram's blue Menu button inside the created bot. */
   commands: { command: string; description: string }[];
+  /** Persistent reply-keyboard rows shown to every user of the created bot. */
+  menuButtons: string[][];
   /** Register all handlers for a tenant bot running this template. */
   register(ctx: TemplateContext): void;
 }

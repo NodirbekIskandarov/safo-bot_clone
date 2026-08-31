@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -18,7 +19,8 @@ export const faqTemplate: BotTemplate = {
   description:
     "Savol va javoblar ro'yxatini kiritasiz. Mijoz savol yozsa bot kalit so'zlar bo'yicha mos " +
     "javobni topib beradi. Topolmasa — ro'yxatni ko'rsatadi. Xodimning vaqtini tejaydi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["📋 Barcha savollar"], ["✍️ Savol berish"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "savollar", description: "Barcha savollar" },
@@ -51,7 +53,17 @@ export const faqTemplate: BotTemplate = {
       await ctx.reply(`<b>${esc(item.question)}</b>\n\n${esc(item.answer)}`, { parse_mode: "HTML" });
     });
 
-registerAdmin(bot, [
+bot.hears("📋 Barcha savollar", async (ctx) => {
+      const { kb, count } = await listKeyboard(ctx.botId);
+      if (count === 0) return ctx.reply("Hozircha savollar bazasi bo'sh.");
+      await ctx.reply(`📋 <b>Savollar (${count})</b>`, { parse_mode: "HTML", reply_markup: kb });
+    });
+
+    bot.hears("✍️ Savol berish", (ctx) =>
+      ctx.reply("✍️ Savolingizni o'z so'zlaringiz bilan yozing — mos javobni topib beraman."),
+    );
+
+    registerAdmin(bot, [
       ...registerBotSubscriptions(bot),
       {
         id: "faq_add",

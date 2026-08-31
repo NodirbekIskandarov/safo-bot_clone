@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -98,7 +99,8 @@ export const surveyTemplate: BotTemplate = {
   description:
     "Savollar ro'yxatini tuzasiz, foydalanuvchi bosqichma-bosqich javob beradi. Barcha javoblarni " +
     "istalgan vaqt CSV fayl qilib yuklab olasiz — Excel'da ochiladi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["📝 Anketani to'ldirish"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "anketa", description: "Anketani boshlash" },
@@ -156,6 +158,18 @@ export const surveyTemplate: BotTemplate = {
 
       const handled = await record(ctx, text);
       if (!handled) return next();
+    });
+
+    bot.hears("📝 Anketani to'ldirish", async (ctx) => {
+      const survey = await activeSurvey(ctx.botId);
+      if (!survey || survey.questions.length === 0) {
+        return ctx.reply("Hozircha anketa tayyor emas.");
+      }
+      const already = await db.surveyResponse.findFirst({
+        where: { surveyId: survey.id, botUserId: ctx.appUser.id },
+      });
+      if (already && !survey.multiple) return ctx.reply("Siz allaqachon javob bergansiz. Rahmat! 🙌");
+      await askQuestion(ctx, survey.id, 0);
     });
 
     registerAdmin(bot, [

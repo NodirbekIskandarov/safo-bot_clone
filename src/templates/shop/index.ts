@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, money, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 import { REGIONS, regionById } from "./regions.js";
@@ -31,9 +32,7 @@ function cartTotal(lines: CartLine[]): number {
   return lines.reduce((sum, l) => sum + l.priceUzs * l.qty, 0);
 }
 
-function mainKeyboard(): Keyboard {
-  return new Keyboard().text("🛍 Katalog").text("🧺 Savat").resized();
-}
+
 
 async function showCatalog(ctx: BotCtx) {
   const categories = await db.category.findMany({
@@ -156,7 +155,8 @@ export const shopTemplate: BotTemplate = {
   description:
     "Mahsulotlarni bot orqali qo'shasiz (rasm, narx, tavsif). Mijoz katalogdan tanlab savatga soladi, " +
     "telefon raqamini qoldiradi va buyurtma beradi. Sizga darhol xabar keladi — bir tugmada tasdiqlaysiz.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["🛍 Katalog", "🧺 Savat"], ["📦 Buyurtmalarim"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "katalog", description: "Katalog" },
@@ -166,15 +166,32 @@ export const shopTemplate: BotTemplate = {
 
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
-      await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, { reply_markup: mainKeyboard() });
-      if (ctx.isAdmin) {
-        await ctx.reply("Admin panel: /admin");
-      }
+      await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, {
+        reply_markup: await mainKeyboard(ctx, shopTemplate.menuButtons),
+      });
       await db.botEvent.create({ data: { botId: ctx.botId, botUserId: ctx.appUser.id, type: "start" } });
     });
 
     bot.hears("🛍 Katalog", (ctx) => showCatalog(ctx));
     bot.hears("🧺 Savat", (ctx) => showCart(ctx));
+
+    bot.hears("📦 Buyurtmalarim", async (ctx) => {
+      const list = await db.order.findMany({
+        where: { botId: ctx.botId, botUserId: ctx.appUser.id },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      });
+      if (list.length === 0) return ctx.reply("Sizda buyurtma yo'q.");
+      const label: Record<string, string> = {
+        new: "🆕 Yangi", confirmed: "✅ Tasdiqlangan", delivering: "🚚 Yo'lda",
+        done: "📦 Yetkazilgan", canceled: "❌ Bekor qilingan",
+      };
+      const lines = list.map(
+        (o) => `#${o.number} — ${money(o.totalUzs)} · ${label[o.status] ?? o.status}\n` +
+          `   <i>${o.createdAt.toLocaleDateString("uz-UZ")}</i>`,
+      );
+      await ctx.reply(`📦 <b>Buyurtmalaringiz</b>\n\n${lines.join("\n")}`, { parse_mode: "HTML" });
+    });
 
     bot.callbackQuery(/^sh:rg:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
@@ -443,7 +460,7 @@ export const shopTemplate: BotTemplate = {
         `✅ <b>Buyurtma qabul qilindi!</b>\n\n` +
           `Raqami: <b>#${order.number}</b>\nJami: <b>${money(order.totalUzs)}</b>${where}\n\n` +
           `Tez orada siz bilan bog'lanamiz.`,
-        { parse_mode: "HTML", reply_markup: mainKeyboard() },
+        { parse_mode: "HTML", reply_markup: await mainKeyboard(ctx, shopTemplate.menuButtons) },
       );
 
       await notifyAdmins(ctx, order.id);

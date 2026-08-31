@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -34,7 +35,8 @@ export const supportTemplate: BotTemplate = {
   description:
     "Mijoz botga savol yozadi, sizga darhol keladi. Javobingiz mijozga qaytadi — u sizning " +
     "shaxsiy raqamingizni bilmaydi. Har bir murojaat tiket raqami bilan saqlanadi.",
-  defaultSettings: { welcome: DEFAULT_WELCOME },
+  defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["✍️ Murojaat yuborish"], ["📋 Murojaatlarim"]],
+
   commands: [
     { command: "start", description: "Boshlash" },
     { command: "murojaat", description: "Murojaat yuborish" },
@@ -43,7 +45,7 @@ export const supportTemplate: BotTemplate = {
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
       await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, {
-        reply_markup: ctx.isAdmin ? new InlineKeyboard().text("⚙️ Admin panel", "adm:menu") : undefined,
+        reply_markup: await mainKeyboard(ctx, [["✍️ Murojaat yuborish"], ["📋 Murojaatlarim"]]),
       });
     });
 
@@ -72,6 +74,26 @@ export const supportTemplate: BotTemplate = {
         },
       },
     ]);
+
+    bot.hears("✍️ Murojaat yuborish", (ctx) =>
+      ctx.reply("✍️ Savolingizni yozing — matn, rasm yoki fayl yuborishingiz mumkin."),
+    );
+
+    bot.hears("📋 Murojaatlarim", async (ctx) => {
+      const list = await db.ticket.findMany({
+        where: { botId: ctx.botId, botUserId: ctx.appUser.id },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      });
+      if (list.length === 0) return ctx.reply("Sizda murojaat yo'q.");
+      const label: Record<string, string> = {
+        open: "🔴 Kutilmoqda", answered: "🟢 Javob berilgan", closed: "⚪️ Yopilgan",
+      };
+      const lines = list.map(
+        (t) => `#${t.number} — ${label[t.status] ?? t.status} · ${t.createdAt.toLocaleDateString("uz-UZ")}`,
+      );
+      await ctx.reply(`📋 <b>Murojaatlaringiz</b>\n\n${lines.join("\n")}`, { parse_mode: "HTML" });
+    });
 
     // ---- admin replies by replying to the forwarded message
     bot.on("message", async (ctx, next) => {

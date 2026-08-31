@@ -120,22 +120,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, path: string
       return json(res, 403, { ok: false, error: "forbidden" });
     }
 
+    const startOfToday = new Date(new Date().setHours(0, 0, 0, 0));
     const since = new Date();
     since.setDate(since.getDate() - 13);
     since.setHours(0, 0, 0, 0);
 
-    const [users, todayUsers, blocked, events, orders, movies, products, tickets, bookings, subs] =
+    const [users, todayUsers, blocked, unsubscribed, joins, access, plans, subs, subRevenue] =
       await Promise.all([
         db.botUser.count({ where: { botId } }),
-        db.botUser.count({ where: { botId, joinedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } } }),
+        db.botUser.count({ where: { botId, joinedAt: { gte: startOfToday } } }),
         db.botUser.count({ where: { botId, status: { in: ["blocked_by_user", "banned"] } } }),
+        db.botUser.count({ where: { botId, status: "unsubscribed" } }),
         db.botUser.findMany({ where: { botId, joinedAt: { gte: since } }, select: { joinedAt: true } }),
-        db.order.findMany({ where: { botId }, orderBy: { createdAt: "desc" }, take: 20 }),
-        db.movie.count({ where: { botId } }),
-        db.product.count({ where: { botId } }),
-        db.ticket.count({ where: { botId, status: { in: ["open", "answered"] } } }),
-        db.booking.count({ where: { botId, slotAt: { gte: new Date() } } }),
+        accessFor(botId),
+        db.botPlan.findMany({ where: { botId }, orderBy: { sortOrder: "asc" } }),
         db.botSubscription.count({ where: { botId, status: "active", endsAt: { gt: new Date() } } }),
+        db.botPayment.aggregate({ where: { botId, status: "approved" }, _sum: { amountUzs: true } }),
       ]);
 
     // 14-day join histogram, zero-filled so the chart never has gaps
@@ -145,9 +145,151 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, path: string
       d.setDate(d.getDate() + i);
       buckets.set(d.toISOString().slice(0, 10), 0);
     }
-    for (const e of events) {
+    for (const e of joins) {
       const key = e.joinedAt.toISOString().slice(0, 10);
       if (buckets.has(key)) buckets.set(key, buckets.get(key)! + 1);
+    }
+
+    // Everything below is template-specific: a kino owner and a shop owner
+    // need completely different numbers on the same screen.
+    const extra: Record<string, unknown> = {};
+
+    if (record.templateKey === "kino") {
+      const [count, top, totalViews] = await Promise.all([
+        db.movie.count({ where: { botId } }),
+        db.movie.findMany({ where: { botId }, orderBy: { views: "desc" }, take: 10 }),
+        db.movie.aggregate({ where: { botId }, _sum: { views: true } }),
+      ]);
+      const channels = await db.requiredChannel.findMany({ where: { botId, isActive: true } });
+      extra.kino = {
+        count,
+        views: totalViews._sum.views ?? 0,
+        channels: channels.map((c) => c.title),
+        top: top.map((m) => ({ code: m.code, title: m.title, views: m.views })),
+      };
+    }
+
+    if (record.templateKey === "shop") {
+      const [products, categories, orders, revenue, byStatus] = await Promise.all([
+        db.product.count({ where: { botId, isActive: true } }),
+        db.category.count({ where: { botId } }),
+        db.order.findMany({ where: { botId }, orderBy: { createdAt: "desc" }, take: 25 }),
+        db.order.aggregate({
+          where: { botId, status: { in: ["confirmed", "delivering", "done"] } },
+          _sum: { totalUzs: true },
+        }),
+        db.order.groupBy({ by: ["status"], where: { botId }, _count: true }),
+      ]);
+      const topProducts = await db.product.findMany({
+        where: { botId }, orderBy: { createdAt: "desc" }, take: 10,
+      });
+      extra.shop = {
+        products, categories,
+        revenue: revenue._sum.totalUzs ?? 0,
+        byStatus: Object.fromEntries(byStatus.map((b) => [b.status, b._count])),
+        orders: orders.map((o) => ({
+          number: o.number, total: o.totalUzs, status: o.status, phone: o.phone,
+          at: o.createdAt, delivery: o.deliveryType,
+          address: [o.region, o.district, o.mahalla, o.address].filter(Boolean).join(", "),
+          map: o.lat && o.lon ? `https://maps.google.com/?q=${o.lat},${o.lon}` : null,
+        })),
+        catalogue: topProducts.map((p) => ({ title: p.title, price: p.priceUzs, active: p.isActive })),
+      };
+    }
+
+    if (record.templateKey === "support") {
+      const [open, answered, closed, recent] = await Promise.all([
+        db.ticket.count({ where: { botId, status: "open" } }),
+        db.ticket.count({ where: { botId, status: "answered" } }),
+        db.ticket.count({ where: { botId, status: "closed" } }),
+        db.ticket.findMany({
+          where: { botId }, orderBy: { lastMsgAt: "desc" }, take: 15,
+          include: { botUser: true, messages: { orderBy: { createdAt: "desc" }, take: 1 } },
+        }),
+      ]);
+      extra.support = {
+        open, answered, closed,
+        tickets: recent.map((t) => ({
+          number: t.number, status: t.status,
+          who: t.botUser.firstName ?? "", username: t.botUser.username,
+          last: t.messages[0]?.text?.slice(0, 90) ?? "",
+          at: t.lastMsgAt,
+        })),
+      };
+    }
+
+    if (record.templateKey === "booking") {
+      const now = new Date();
+      const endOfToday = new Date(startOfToday);
+      endOfToday.setDate(endOfToday.getDate() + 1);
+      const [today, upcoming, done, canceled, list] = await Promise.all([
+        db.booking.count({ where: { botId, slotAt: { gte: startOfToday, lt: endOfToday } } }),
+        db.booking.count({ where: { botId, slotAt: { gte: now }, status: { in: ["new", "confirmed"] } } }),
+        db.booking.count({ where: { botId, status: "done" } }),
+        db.booking.count({ where: { botId, status: "canceled" } }),
+        db.booking.findMany({
+          where: { botId, slotAt: { gte: startOfToday } },
+          orderBy: { slotAt: "asc" }, take: 20, include: { botUser: true },
+        }),
+      ]);
+      extra.booking = {
+        today, upcoming, done, canceled,
+        slots: list.map((b) => ({
+          number: b.number, service: b.service, at: b.slotAt, phone: b.phone,
+          status: b.status, who: b.botUser.firstName ?? "",
+        })),
+      };
+    }
+
+    if (record.templateKey === "contest") {
+      const current = await db.contest.findFirst({
+        where: { botId }, orderBy: { createdAt: "desc" },
+        include: { entries: { include: { botUser: true } } },
+      });
+      extra.contest = current
+        ? {
+            title: current.title, prize: current.prize, status: current.status,
+            winnerCount: current.winnerCount, entries: current.entries.length,
+            winners: current.entries
+              .filter((e) => e.isWinner)
+              .map((e) => ({ ticket: e.ticketNo, who: e.botUser.firstName ?? "", username: e.botUser.username })),
+          }
+        : null;
+    }
+
+    if (record.templateKey === "faq") {
+      const items = await db.faqItem.findMany({ where: { botId }, orderBy: { hits: "desc" }, take: 20 });
+      extra.faq = {
+        count: items.length,
+        hits: items.reduce((sum, i) => sum + i.hits, 0),
+        items: items.map((i) => ({ q: i.question, hits: i.hits })),
+      };
+    }
+
+    if (record.templateKey === "survey") {
+      const survey = await db.survey.findFirst({
+        where: { botId, isActive: true }, orderBy: { createdAt: "desc" },
+        include: { questions: { orderBy: { order: "asc" } }, _count: { select: { responses: true } } },
+      });
+      extra.survey = survey
+        ? {
+            title: survey.title,
+            questions: survey.questions.map((q) => q.prompt),
+            responses: survey._count.responses,
+          }
+        : null;
+    }
+
+    if (record.templateKey === "broadcast") {
+      const sent = await db.broadcast.findMany({
+        where: { botId }, orderBy: { createdAt: "desc" }, take: 10,
+      });
+      extra.broadcast = {
+        total: sent.length,
+        recent: sent.map((b) => ({
+          status: b.status, total: b.totalCount, sent: b.sentCount, failed: b.failedCount, at: b.createdAt,
+        })),
+      };
     }
 
     return json(res, 200, {
@@ -157,13 +299,19 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, path: string
         username: record.tgUsername,
         template: record.templateKey,
         status: record.status,
-        stats: { users, todayUsers, blocked, movies, products, tickets, bookings, subs },
+        createdAt: record.createdAt,
+        plan: access ? {
+          name: access.planName, status: access.status,
+          daysLeft: access.daysLeft, maxUsers: access.maxBotUsers,
+        } : null,
+        stats: { users, todayUsers, blocked, unsubscribed, active: users - blocked - unsubscribed },
         chart: [...buckets.entries()].map(([date, count]) => ({ date, count })),
-        orders: orders.map((o) => ({
-          number: o.number, total: o.totalUzs, status: o.status,
-          phone: o.phone, at: o.createdAt,
-          address: [o.region, o.district, o.mahalla, o.address].filter(Boolean).join(", "),
-        })),
+        selling: {
+          plans: plans.map((p) => ({ title: p.title, price: p.priceUzs, days: p.days, active: p.isActive })),
+          subscribers: subs,
+          revenue: subRevenue._sum.amountUzs ?? 0,
+        },
+        extra,
       },
     });
   }
