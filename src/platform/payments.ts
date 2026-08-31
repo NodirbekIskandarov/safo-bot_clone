@@ -9,6 +9,10 @@ import { log } from "../lib/log.js";
 import { reloadBot, startBot } from "../runtime/registry.js";
 import { adminTgIds, audit, isAdmin, paymentReference } from "./access.js";
 import { paymentDetails } from "./settings.js";
+import { move } from "../billing/wallet.js";
+import { priceOf } from "../billing/templates.js";
+import { payReferralBonus } from "./cabinet.js";
+import { withEffect } from "../lib/effects.js";
 import { TERMS, termPrice } from "./menu.js";
 import { PLAN_COPY, perUser, recommend } from "./plancopy.js";
 
@@ -59,35 +63,76 @@ export async function showPlansFor(ctx: Context, botId: string) {
 export async function showTerms(ctx: Context, botId: string, planCode: string) {
   const plan = await db.plan.findUnique({ where: { code: planCode } });
   if (!plan) return;
+  const buyer = await db.owner.findUnique({ where: { tgUserId: BigInt(ctx.from!.id) } });
+  const premium = buyer?.isPremium ?? false;
 
   const kb = new InlineKeyboard();
   for (const t of TERMS) {
-    const total = termPrice(plan.priceUzs, t.months);
-    const save = t.discount > 0 ? ` · −${Math.round(t.discount * 100)}%` : "";
+    const total = termPrice(plan.priceUzs, t.months, premium);
+    const off = Math.round((t.discount + (premium ? 0.1 : 0)) * 100);
+    const save = off > 0 ? ` · −${off}%` : "";
     kb.text(`${t.label} — ${money(total)}${save}`, `pyd:${botId}:${planCode}:${t.months}`).row();
   }
   kb.text("◀️ Orqaga", `p:pay:${botId}`);
 
   await ctx.editMessageText(
     `📦 <b>${esc(plan.name)}</b> — ${plan.maxBotUsers} obunachi\n\n` +
-      `Muddatni tanlang. Uzoq muddat arzonroq:`,
+      `Muddatni tanlang. Uzoq muddat arzonroq:` +
+      (premium ? `\n\n💎 <i>Premium chegirmangiz narxlarga qo'shilgan.</i>` : ""),
     { parse_mode: "HTML", reply_markup: kb },
   );
 }
 
 export async function showInvoice(ctx: Context, botId: string, planCode: string, months: number) {
+  return renderInvoice(ctx, botId, planCode, months, false);
+}
+
+/** Card details without the balance shortcut — used when the user chose card explicitly. */
+export async function showCardInvoice(ctx: Context, botId: string, planCode: string, months: number) {
+  return renderInvoice(ctx, botId, planCode, months, true);
+}
+
+async function renderInvoice(
+  ctx: Context,
+  botId: string,
+  planCode: string,
+  months: number,
+  forceCard: boolean,
+) {
   const [record, plan, details] = await Promise.all([
     db.bot.findUnique({ where: { id: botId } }),
     db.plan.findUnique({ where: { code: planCode } }),
     paymentDetails(),
   ]);
   if (!record || !plan) return;
-  const amount = termPrice(plan.priceUzs, months);
+  const buyer = await db.owner.findUnique({ where: { tgUserId: BigInt(ctx.from!.id) } });
+  const amount = termPrice(plan.priceUzs, months, buyer?.isPremium ?? false);
 
   if (!details.card) {
     return void ctx.editMessageText(
       "⚠️ To'lov kartasi hali sozlanmagan. Administratorga murojaat qiling.",
       { reply_markup: new InlineKeyboard().text("◀️ Orqaga", `p:bot:${botId}`) },
+    );
+  }
+
+  const owner = await db.owner.findUniqueOrThrow({ where: { tgUserId: BigInt(ctx.from!.id) } });
+  if (!forceCard && owner.balanceUzs >= amount) {
+    return void ctx.editMessageText(
+      `💳 <b>To'lov</b>\n\n` +
+        `Bot: @${esc(record.tgUsername)}\n` +
+        `Tarif: <b>${esc(plan.name)}</b> · ${months} oy\n` +
+        `Summa: <b>${money(amount)}</b>\n\n` +
+        `💰 Balansingiz: <b>${money(owner.balanceUzs)}</b> — yetadi.\n\n` +
+        `Balansdan to'lasangiz chek yuborish va tasdiq kutish shart emas, tarif <b>darhol</b> faollashadi.`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("⚡️ Balansdan to'lash", `wb:${botId}:${planCode}:${months}`)
+          .row()
+          .text("💳 Karta orqali", `pyc:${botId}:${planCode}:${months}`)
+          .row()
+          .text("◀️ Orqaga", `py:${botId}:${planCode}`),
+      },
     );
   }
 
@@ -108,7 +153,10 @@ export async function showInvoice(ctx: Context, botId: string, planCode: string,
       `To'lagach <b>chek skrinshotini</b> shu yerga tashlang.\n` +
       `Admin tekshirib tasdiqlaydi — odatda bir necha daqiqada.\n\n` +
       `Bekor qilish: /bekor`,
-    { parse_mode: "HTML" },
+    {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("💰 Balansni to'ldirib, tez to'lash", "w:top"),
+    },
   );
 }
 
@@ -137,7 +185,7 @@ export async function submitReceipt(
       ownerId: owner.id,
       subscriptionId: record.subscription?.id ?? null,
       planId: plan.id,
-      amountUzs: termPrice(plan.priceUzs, months),
+      amountUzs: termPrice(plan.priceUzs, months, owner.isPremium),
       months,
       receiptFileId: input.fileId ?? null,
       receiptText: input.text ?? null,
@@ -219,7 +267,59 @@ export function registerPaymentReview(bot: Bot) {
       return;
     }
 
-    if (!payment.subscription) return ctx.answerCallbackQuery("Obuna topilmadi");
+    // ---- balance top-up
+    if (payment.kind === "topup") {
+      const left = await move(payment.ownerId, payment.amountUzs, "topup", {
+        note: `To'lov ${payment.reference}`, refId: payment.id,
+      });
+      await db.payment.update({
+        where: { id: paymentId },
+        data: { status: "approved", reviewedBy: actor, reviewedAt: new Date() },
+      });
+      await audit(actor, "payment.topup", payment.reference, { amountUzs: payment.amountUzs });
+      await ctx.answerCallbackQuery("Balans to'ldirildi ✅");
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await sendSafe(() =>
+        ctx.api.sendMessage(
+          Number(payment.owner.tgUserId),
+          `💰 <b>Balans to'ldirildi</b>\n\n+${money(payment.amountUzs)}\n` +
+            `Yangi balans: <b>${money(left)}</b>\n\nEndi «💳 Tariflar» dan bir bosishda sotib olasiz.`,
+          { parse_mode: "HTML", ...withEffect("party") },
+        ),
+      );
+      await payReferralBonus(payment.ownerId, payment.amountUzs);
+      log.info("topup approved", { paymentId, by: String(actor) });
+      return;
+    }
+
+    // ---- one-off template purchase
+    if (payment.kind === "template" && payment.templateKey) {
+      await db.ownerTemplate.upsert({
+        where: { ownerId_templateKey: { ownerId: payment.ownerId, templateKey: payment.templateKey } },
+        create: { ownerId: payment.ownerId, templateKey: payment.templateKey, pricePaid: payment.amountUzs },
+        update: {},
+      });
+      await db.payment.update({
+        where: { id: paymentId },
+        data: { status: "approved", reviewedBy: actor, reviewedAt: new Date() },
+      });
+      await audit(actor, "payment.template", payment.reference, { templateKey: payment.templateKey });
+      await ctx.answerCallbackQuery("Shablon ochildi ✅");
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await sendSafe(() =>
+        ctx.api.sendMessage(
+          Number(payment.owner.tgUserId),
+          `🔓 <b>Shablon ochildi!</b>\n\nEndi «➕ Bot yaratish» da undan foydalanishingiz mumkin.`,
+          { parse_mode: "HTML" },
+        ),
+      );
+      return;
+    }
+
+    // ---- subscription
+    if (!payment.subscription || !payment.planId || !payment.plan) {
+      return ctx.answerCallbackQuery("Obuna topilmadi");
+    }
 
     await activate(payment.subscription.id, payment.planId, payment.months);
     await db.payment.update({
@@ -250,7 +350,7 @@ export function registerPaymentReview(bot: Bot) {
         Number(payment.owner.tgUserId),
         `🎉 <b>To'lov tasdiqlandi!</b>\n\n` +
           `Bot: @${esc(payment.subscription!.bot.tgUsername)}\n` +
-          `Tarif: <b>${esc(payment.plan.name)}</b>\n` +
+          `Tarif: <b>${esc(payment.plan!.name)}</b>\n` +
           `Amal qiladi: <b>${payment.months} oy</b>\n\n` +
           `Botingiz ishlayapti. Rahmat! 🙌`,
         { parse_mode: "HTML" },

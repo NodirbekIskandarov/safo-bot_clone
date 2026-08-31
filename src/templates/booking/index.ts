@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "booking";
@@ -39,6 +40,11 @@ export const bookingTemplate: BotTemplate = {
     "Sartaroshxona, klinika, avtoyuvish, ustaxona uchun. Mijoz xizmat turini, kunni va soatni " +
     "tanlaydi, telefonini qoldiradi. Sizga xabar keladi, bir tugmada tasdiqlaysiz. Band vaqtlar ko'rinmaydi.",
   defaultSettings: { welcome: DEFAULT_WELCOME, services: DEFAULT_SERVICES },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "navbat", description: "Navbat olish" },
+    { command: "mening", description: "Mening navbatlarim" },
+  ],
 
   register({ bot }: TemplateContext) {
     const mainKb = new Keyboard().text("📅 Navbat olish").text("🗓 Mening navbatlarim").resized();
@@ -245,6 +251,7 @@ export const bookingTemplate: BotTemplate = {
     });
 
     registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "bk_today",
         label: "📅 Bugungi navbatlar",

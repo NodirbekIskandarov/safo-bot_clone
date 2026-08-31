@@ -3,7 +3,9 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, money, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
+import { REGIONS, regionById } from "./regions.js";
 
 const SCOPE = "shop";
 const CART = "shop_cart";
@@ -115,7 +117,10 @@ async function notifyAdmins(ctx: BotCtx, orderId: string) {
     (order.botUser.username ? ` (@${esc(order.botUser.username)})` : "") +
     `\n📞 ${esc(order.phone)}\n` +
     `🚚 ${order.deliveryType === "delivery" ? "Yetkazib berish" : "Olib ketish"}` +
-    (order.address ? `\n📍 ${esc(order.address)}` : "");
+    (order.region ? `\n📍 ${esc(order.region)}, ${esc(order.district ?? "")}` : "") +
+    (order.mahalla ? `\n🏘 ${esc(order.mahalla)}` : "") +
+    (order.address ? `\n🏠 ${esc(order.address)}` : "") +
+    (order.lat && order.lon ? `\n🗺 <a href="https://maps.google.com/?q=${order.lat},${order.lon}">Xaritada ochish</a>` : "");
 
   const kb = new InlineKeyboard()
     .text("✅ Tasdiqlash", `sh:ord:confirmed:${order.id}`)
@@ -127,9 +132,19 @@ async function notifyAdmins(ctx: BotCtx, orderId: string) {
   for (const admin of admins) {
     await sendSafe(
       () =>
-        ctx.api.sendMessage(Number(admin.tgUserId), body, { parse_mode: "HTML", reply_markup: kb }),
+        ctx.api.sendMessage(Number(admin.tgUserId), body, {
+          parse_mode: "HTML",
+          reply_markup: kb,
+          link_preview_options: { is_disabled: true },
+        }),
       { botId: ctx.botId, botUserId: admin.id },
     );
+    // A pin the courier can open in their map app beats a copied address.
+    if (order.lat && order.lon) {
+      await sendSafe(() => ctx.api.sendLocation(Number(admin.tgUserId), order.lat!, order.lon!), {
+        botId: ctx.botId, botUserId: admin.id,
+      });
+    }
   }
 }
 
@@ -142,6 +157,12 @@ export const shopTemplate: BotTemplate = {
     "Mahsulotlarni bot orqali qo'shasiz (rasm, narx, tavsif). Mijoz katalogdan tanlab savatga soladi, " +
     "telefon raqamini qoldiradi va buyurtma beradi. Sizga darhol xabar keladi — bir tugmada tasdiqlaysiz.",
   defaultSettings: { welcome: DEFAULT_WELCOME },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "katalog", description: "Katalog" },
+    { command: "savat", description: "Savat" },
+    { command: "buyurtmalarim", description: "Buyurtmalarim" },
+  ],
 
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
@@ -154,6 +175,57 @@ export const shopTemplate: BotTemplate = {
 
     bot.hears("🛍 Katalog", (ctx) => showCatalog(ctx));
     bot.hears("🧺 Savat", (ctx) => showCart(ctx));
+
+    bot.callbackQuery(/^sh:rg:(.+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const region = regionById(ctx.match[1]!);
+      if (!region) return;
+      setStep(SCOPE, ctx.from!.id, "await_district", { region: region.name });
+
+      const kb = new InlineKeyboard();
+      region.districts.forEach((d, i) => {
+        // index, not the name: district names blow past the 64-byte callback cap
+        kb.text(d, `sh:dt:${region.id}:${i}`);
+        if (i % 2 === 1) kb.row();
+      });
+      kb.row().text("◀️ Viloyatlar", "sh:rgback");
+
+      await ctx.editMessageText(`🗺 <b>${esc(region.name)}</b>\n\nTuman yoki shaharni tanlang:`, {
+        parse_mode: "HTML",
+        reply_markup: kb,
+      });
+    });
+
+    bot.callbackQuery("sh:rgback", async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const kb = new InlineKeyboard();
+      REGIONS.forEach((r, i) => {
+        kb.text(r.name, `sh:rg:${r.id}`);
+        if (i % 2 === 1) kb.row();
+      });
+      await ctx.editMessageText("🗺 <b>Viloyatni tanlang:</b>", { parse_mode: "HTML", reply_markup: kb });
+    });
+
+    bot.callbackQuery(/^sh:dt:([^:]+):(\d+)$/, async (ctx) => {
+      await ctx.answerCallbackQuery();
+      const region = regionById(ctx.match[1]!);
+      const district = region?.districts[Number(ctx.match[2])];
+      if (!region || !district) return;
+
+      setStep(SCOPE, ctx.from!.id, "await_mahalla", { region: region.name, district });
+      await ctx.editMessageText(`📍 ${esc(region.name)}, ${esc(district)}`, { parse_mode: "HTML" });
+      await ctx.reply("🏘 <b>Mahalla yoki qishloq nomini yozing:</b>", { parse_mode: "HTML" });
+    });
+
+    bot.on("message:location", async (ctx, next) => {
+      const state = getStep(SCOPE, ctx.from!.id);
+      if (state?.step !== "await_location") return next();
+      setStep(SCOPE, ctx.from!.id, "confirm", {
+        lat: ctx.message.location.latitude,
+        lon: ctx.message.location.longitude,
+      });
+      await finishOrder(ctx);
+    });
 
     bot.callbackQuery(/^sh:cat:(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
@@ -228,15 +300,47 @@ export const shopTemplate: BotTemplate = {
       if (state?.step === "await_delivery") {
         const delivery = text.includes("Yetkaz") ? "delivery" : "pickup";
         if (delivery === "delivery") {
-          setStep(SCOPE, ctx.from!.id, "await_address", { deliveryType: delivery });
-          return ctx.reply("📍 Manzilingizni yozing:", { reply_markup: { remove_keyboard: true } });
+          setStep(SCOPE, ctx.from!.id, "await_region", { deliveryType: delivery });
+          const kb = new InlineKeyboard();
+          REGIONS.forEach((r, i) => {
+            kb.text(r.name, `sh:rg:${r.id}`);
+            if (i % 2 === 1) kb.row();
+          });
+          return ctx.reply("🗺 <b>Viloyatni tanlang:</b>", {
+            parse_mode: "HTML",
+            reply_markup: kb,
+          });
         }
         setStep(SCOPE, ctx.from!.id, "confirm", { deliveryType: delivery });
         return finishOrder(ctx);
       }
 
-      if (state?.step === "await_address") {
-        setStep(SCOPE, ctx.from!.id, "confirm", { address: text });
+      if (state?.step === "await_mahalla") {
+        setStep(SCOPE, ctx.from!.id, "await_street", { mahalla: text });
+        return ctx.reply(
+          "🏠 Ko'cha va uy raqamini yozing:\n\n<i>Masalan: Amir Temur ko'chasi, 12-uy, 5-xonadon</i>",
+          { parse_mode: "HTML" },
+        );
+      }
+
+      if (state?.step === "await_street") {
+        setStep(SCOPE, ctx.from!.id, "await_location", { address: text });
+        return ctx.reply(
+          "📍 <b>Oxirgi qadam</b>\n\nAniq joyni xaritada belgilang — kuryer adashmaydi.\n\n" +
+            "<i>Xohlamasangiz «O'tkazib yuborish» bosing.</i>",
+          {
+            parse_mode: "HTML",
+            reply_markup: new Keyboard()
+              .requestLocation("📍 Lokatsiyani yuborish")
+              .row()
+              .text("⏭ O'tkazib yuborish")
+              .resized()
+              .oneTime(),
+          },
+        );
+      }
+
+      if (state?.step === "await_location" && text.includes("O'tkazib")) {
         return finishOrder(ctx);
       }
 
@@ -317,7 +421,12 @@ export const shopTemplate: BotTemplate = {
           items: JSON.stringify(lines),
           totalUzs: cartTotal(lines),
           deliveryType: (state.data.deliveryType as string) ?? "pickup",
+          region: (state.data.region as string) ?? null,
+          district: (state.data.district as string) ?? null,
+          mahalla: (state.data.mahalla as string) ?? null,
           address: (state.data.address as string) ?? null,
+          lat: (state.data.lat as number) ?? null,
+          lon: (state.data.lon as number) ?? null,
           phone: (state.data.phone as string) ?? "—",
         },
       });
@@ -325,8 +434,14 @@ export const shopTemplate: BotTemplate = {
       clearStep(SCOPE, ctx.from!.id);
       clearStep(CART, ctx.from!.id);
 
+      const where =
+        order.deliveryType === "delivery"
+          ? `\n📍 ${[order.region, order.district, order.mahalla, order.address].filter(Boolean).join(", ")}`
+          : "\n🏪 Olib ketasiz";
+
       await ctx.reply(
-        `✅ <b>Buyurtma qabul qilindi!</b>\n\nRaqami: <b>#${order.number}</b>\nJami: <b>${money(order.totalUzs)}</b>\n\n` +
+        `✅ <b>Buyurtma qabul qilindi!</b>\n\n` +
+          `Raqami: <b>#${order.number}</b>\nJami: <b>${money(order.totalUzs)}</b>${where}\n\n` +
           `Tez orada siz bilan bog'lanamiz.`,
         { parse_mode: "HTML", reply_markup: mainKeyboard() },
       );
@@ -365,6 +480,7 @@ export const shopTemplate: BotTemplate = {
     // ---------------------------------------------------------------- admin
 
     registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "prod_add",
         label: "➕ Mahsulot",

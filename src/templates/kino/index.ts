@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "kino";
@@ -81,6 +82,10 @@ export const kinoTemplate: BotTemplate = {
     "Siz botga video yuklab, unga kod berasiz (masalan 100). Foydalanuvchi shu kodni yozsa — kino " +
     "darhol jo'natiladi. Majburiy obuna qo'ysangiz, kino olishdan oldin kanalingizga obuna bo'lishadi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "qidir", description: "Kino qidirish" },
+  ],
 
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
@@ -107,6 +112,7 @@ export const kinoTemplate: BotTemplate = {
     // ---------------------------------------------------------------- admin
 
     registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "movie_add",
         label: "➕ Kino qo'shish",

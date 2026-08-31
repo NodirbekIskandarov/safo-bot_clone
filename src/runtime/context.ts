@@ -27,6 +27,8 @@ export interface BotTemplate {
   /** Longer explanation shown after the user picks it. */
   description: string;
   defaultSettings: Record<string, unknown>;
+  /** Shown in Telegram's blue Menu button inside the created bot. */
+  commands: { command: string; description: string }[];
   /** Register all handlers for a tenant bot running this template. */
   register(ctx: TemplateContext): void;
 }

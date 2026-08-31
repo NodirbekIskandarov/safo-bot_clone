@@ -23,6 +23,11 @@ model Owner {
   adminAddedBy BigInt?                     // who promoted this admin
   adminAddedAt DateTime?
   trialUsedAt DateTime?                    // trial is account-bound, granted once
+  balanceUzs  Int      @default(0)         // wallet: topped up once, spent many times
+  referredBy  String?                      // Owner.id of whoever invited them
+  refBonusPaid Boolean @default(false)     // first-topup bonus is granted once
+  isPremium   Boolean  @default(false)
+  premiumUntil DateTime?
   status      String   @default("active")  // active | suspended
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -30,6 +35,8 @@ model Owner {
   bots          Bot[]
   subscriptions Subscription[]
   payments      Payment[]
+  balanceTxs    BalanceTx[]
+  ownedTemplates OwnerTemplate[]
 }
 
 model Bot {
@@ -65,6 +72,7 @@ model Bot {
   contests     Contest[]
   faqItems     FaqItem[]
   bookings     Booking[]
+  botPlans     BotPlan[]
   subscription Subscription?
 
   @@index([ownerId, status])
@@ -90,6 +98,8 @@ model BotUser {
   tickets          Ticket[]
   contestEntries   ContestEntry[]
   bookings         Booking[]
+  botSubscription  BotSubscription?
+  botPayments      BotPayment[]
 
   @@unique([botId, tgUserId])
   @@index([botId, joinedAt])
@@ -221,7 +231,12 @@ model Order {
   items         String                          // JSON snapshot: [{title, priceUzs, qty}]
   totalUzs      Int
   deliveryType  String                          // pickup | delivery
-  address       String?
+  region        String?                         // viloyat
+  district      String?                         // tuman
+  mahalla       String?
+  address       String?                         // ko'cha, uy
+  lat           Float?
+  lon           Float?
   phone         String
   comment       String?
   paymentMethod String   @default("cash")
@@ -326,11 +341,13 @@ model Payment {
   owner          Owner     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   subscriptionId String?
   subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
-  planId         String
-  plan           Plan      @relation(fields: [planId], references: [id])
+  planId         String?
+  plan           Plan?     @relation(fields: [planId], references: [id])
+  templateKey    String?                        // set when kind = template
   amountUzs      Int
   months         Int       @default(1)         // 1 | 3 | 12 — longer terms are discounted
-  status         String    @default("pending") // pending | approved | rejected
+  kind           String    @default("subscription") // subscription | topup | template
+  status         String    @default("pending")      // pending | approved | rejected
   receiptFileId  String?                       // screenshot of the transfer
   receiptText    String?
   reviewedBy     BigInt?
@@ -462,4 +479,107 @@ model Booking {
 
   @@unique([botId, number])
   @@index([botId, slotAt])
+}
+
+
+// ---------------------------------------------------------------- wallet
+
+model BalanceTx {
+  id        String   @id @default(uuid())
+  ownerId   String
+  owner     Owner    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  amountUzs Int                                 // positive = credit, negative = debit
+  kind      String                              // topup | subscription | template | refund | bonus
+  note      String?
+  refId     String?                             // payment / subscription / template it relates to
+  balanceAfter Int
+  createdAt DateTime @default(now())
+
+  @@index([ownerId, createdAt])
+}
+
+model SupportMessage {
+  id        String   @id @default(uuid())
+  ownerId   String
+  text      String
+  answered  Boolean  @default(false)
+  answer    String?
+  createdAt DateTime @default(now())
+
+  @@index([answered, createdAt])
+}
+
+/** Per-template one-off price. Rows are seeded from the template registry. */
+model TemplatePrice {
+  key        String   @id                       // matches BotTemplate.key
+  priceUzs   Int      @default(0)               // 0 = included with any subscription
+  isForSale  Boolean  @default(false)           // true = must be bought before use
+  isEnabled  Boolean  @default(true)            // false = hidden from the picker
+  sortOrder  Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+model OwnerTemplate {
+  id          String   @id @default(uuid())
+  ownerId     String
+  owner       Owner    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  templateKey String
+  pricePaid   Int
+  purchasedAt DateTime @default(now())
+
+  @@unique([ownerId, templateKey])
+}
+
+// ------------------------------------------- subscriptions inside a tenant bot
+
+/** A tariff the bot owner sells to their own audience (VIP content, clubs). */
+model BotPlan {
+  id          String   @id @default(uuid())
+  botId       String
+  bot         Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  priceUzs    Int
+  days        Int      @default(30)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subscriptions BotSubscription[]
+  payments      BotPayment[]
+
+  @@index([botId, isActive])
+}
+
+model BotSubscription {
+  id         String   @id @default(uuid())
+  botId      String
+  botUserId  String   @unique                   // one live subscription per subscriber
+  botUser    BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  botPlanId  String
+  botPlan    BotPlan  @relation(fields: [botPlanId], references: [id], onDelete: Cascade)
+  status     String   @default("active")        // active | expired
+  endsAt     DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([botId, status, endsAt])
+}
+
+model BotPayment {
+  id            String   @id @default(uuid())
+  botId         String
+  botUserId     String
+  botUser       BotUser  @relation(fields: [botUserId], references: [id], onDelete: Cascade)
+  botPlanId     String
+  botPlan       BotPlan  @relation(fields: [botPlanId], references: [id], onDelete: Cascade)
+  amountUzs     Int
+  receiptFileId String?
+  status        String   @default("pending")    // pending | approved | rejected
+  reviewedBy    BigInt?
+  reviewedAt    DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([botId, status])
 }

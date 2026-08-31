@@ -10,26 +10,55 @@ import { reloadBot, startBot, stopBot } from "../runtime/registry.js";
 import { templateList, templates } from "../templates/index.js";
 import { accessFor, openSubscription } from "../billing/subscription.js";
 import { registerPlatformAdmin } from "./adminpanel.js";
-import { registerPaymentReview, showInvoice, showPlansFor, showTerms, submitReceipt } from "./payments.js";
+import { registerPaymentReview, showCardInvoice, showInvoice, showPlansFor, showTerms, submitReceipt } from "./payments.js";
 import { isMenuButton, TERMS, termPrice } from "./menu.js";
 import { PLAN_COPY, perUser, recommend } from "./plancopy.js";
 import { TEMPLATE_COPY } from "./templatecopy.js";
+import { buyFromBalance, registerWallet, showTopupInvoice, showWallet, submitTopup } from "./wallet.ui.js";
+import { registerCabinet, showCabinet, takeSupportMessage } from "./cabinet.js";
+import { withEffect } from "../lib/effects.js";
+import { balanceOf, charge, InsufficientFunds } from "../billing/wallet.js";
+import { enabledTemplateKeys, ownedKeys, ownerMayUse, priceOf } from "../billing/templates.js";
 import { isAdmin } from "./access.js";
 
 const SCOPE = "platform";
 
 const mainKeyboard = new Keyboard()
   .text("➕ Bot yaratish")
+  .text("🤖 Botlarim")
   .row()
-  .text("🤖 Mening botlarim")
-  .text("💳 Tariflar")
+  .text("🗣 Referal")
+  .text("🪪 Shaxsiy kabinet")
   .row()
-  .text("❓ Yordam")
+  .text("📱 Ilova")
+  .text("💵 Hisob to'ldirish")
+  .row()
+  .text("✉️ Murojaat")
+  .text("📘 Qo'llanma")
   .resized();
 
-function templatePicker(): InlineKeyboard {
+/** Mini App entry. Omitted entirely when no HTTPS url is configured. */
+function webAppButton(label: string, param?: string): InlineKeyboard | undefined {
+  if (!config.WEB_APP_URL) return undefined;
+  const url = param ? `${config.WEB_APP_URL}?bot=${param}` : config.WEB_APP_URL;
+  return new InlineKeyboard().webApp(label, url);
+}
+
+async function templatePicker(ownerId?: string): Promise<InlineKeyboard> {
+  const [enabled, owned, prices] = await Promise.all([
+    enabledTemplateKeys(),
+    ownerId ? ownedKeys(ownerId) : Promise.resolve(new Set<string>()),
+    db.templatePrice.findMany(),
+  ]);
+  const priceBy = new Map(prices.map((p) => [p.key, p]));
+
   const kb = new InlineKeyboard();
-  for (const t of templateList) kb.text(`${t.emoji} ${t.name}`, `p:tpl:${t.key}`).row();
+  for (const t of templateList) {
+    if (!enabled.has(t.key)) continue;
+    const price = priceBy.get(t.key);
+    const locked = price?.isForSale && price.priceUzs > 0 && !owned.has(t.key);
+    kb.text(`${locked ? "🔒 " : ""}${t.emoji} ${t.name}`, `p:tpl:${t.key}`).row();
+  }
   kb.text("🎯 Qaysi bot menga kerak?", "p:tguide");
   return kb;
 }
@@ -62,6 +91,9 @@ const HELP_MENU = new InlineKeyboard()
   .row()
   .text("⚙️ Botni boshqarish", "h:manage")
   .text("💳 To'lov", "h:pay")
+  .row()
+  .text("💰 Balans va referal", "h:money")
+  .text("📱 Ilova", "h:app")
   .row()
   .text("🔒 Xavfsizlik", "h:sec")
   .text("🛠 Muammo bo'lsa", "h:trouble");
@@ -107,6 +139,34 @@ const HELP_SECTIONS: Record<string, string> = {
     `<b>Muddat tugasa:</b> 3 kun muhlat beriladi, bot ishlayveradi. Keyin to'xtaydi, ` +
     `lekin <b>ma'lumotlar saqlanadi</b> — to'lasangiz o'sha zahoti qayta ishlaydi.\n\n` +
     `<b>Erta to'lasangiz</b> qolgan kunlar yo'qolmaydi, ustiga qo'shiladi.`,
+  money:
+    `💰 <b>Balans va referal</b>\n\n` +
+    `<b>Balans nima uchun kerak?</b>\n` +
+    `Hisobingizni oldindan to'ldirib qo'yasiz. Keyin tarif yoki shablon sotib olishda ` +
+    `chek yuborib, admin tasdig'ini kutib o'tirmaysiz — <b>bir bosishda</b> to'laysiz.\n\n` +
+    `<b>Qanday to'ldiriladi?</b>\n` +
+    `«💵 Hisob to'ldirish» → summani tanlang → kartaga o'tkazing → chek skrinshotini tashlang. ` +
+    `Admin tasdiqlagach balansga tushadi.\n\n` +
+    `<b>Pul yonadimi?</b>\n` +
+    `Yo'q. Balansdagi mablag' muddatsiz turadi.\n\n` +
+    `<b>Referal dasturi</b>\n` +
+    `«🗣 Referal» bo'limidan shaxsiy havolangizni olasiz. Do'stingiz shu havola orqali kelib ` +
+    `hisobini to'ldirsa — uning <b>birinchi to'lovidan 10%</b> sizning balansingizga tushadi.\n\n` +
+    `<b>💎 Premium</b>\n` +
+    `Premium a'zolar barcha tariflarni <b>10% arzon</b> oladi va to'lovlari navbatsiz ko'riladi.`,
+  app:
+    `📱 <b>Ilova</b>\n\n` +
+    `Botxona ilovasi — Telegram ichida ochiladigan to'liq boshqaruv paneli. Alohida sayt ` +
+    `yoki dastur o'rnatish shart emas.\n\n` +
+    `<b>Ilovada nima bor:</b>\n` +
+    `• Barcha botlaringiz bitta ro'yxatda — holati, tarifi, obunachilari\n` +
+    `• 14 kunlik o'sish grafigi\n` +
+    `• Har bir bot bo'yicha batafsil ko'rsatkichlar\n` +
+    `• Do'kon botlari uchun oxirgi buyurtmalar\n` +
+    `• Balans va amallar tarixi\n\n` +
+    `<b>Qanday ochiladi:</b>\n` +
+    `Pastdagi «📱 Ilova» tugmasi yoki chat tepasidagi menyu tugmasi orqali. ` +
+    `Bot kartochkasidagi «📱 Ilovada ochish» esa o'sha botning sahifasini ochadi.`,
   sec:
     `🔒 <b>Xavfsizlik</b>\n\n` +
     `<b>Token:</b> AES-256-GCM bilan shifrlanadi. Faqat Telegram'ga murojaat paytida ochiladi. ` +
@@ -132,7 +192,7 @@ const HELP_SECTIONS: Record<string, string> = {
     `Tarif limitiga yetgansiz. «💳 Tariflar» → kattarog'ini tanlang.`,
 };
 
-export function createPlatformBot(): Bot {
+export function createPlatformBot(botUsername: string): Bot {
   const bot = new Bot(config.PLATFORM_BOT_TOKEN);
 
   // Must be the very first middleware: tapping a menu button while inside any
@@ -145,11 +205,41 @@ export function createPlatformBot(): Bot {
 
   registerPlatformAdmin(bot);
   registerPaymentReview(bot);
+  registerWallet(bot);
+  registerCabinet(bot, botUsername);
 
   bot.command("start", async (ctx) => {
-    await ownerOf(ctx);
+    const owner = await ownerOf(ctx);
     clearAll(ctx.from!.id);
+
+    // ?start=ref_<tgId> — credited only for brand-new accounts, never self-referral
+    const payload = ctx.match?.trim();
+    if (payload?.startsWith("ref_") && !owner.referredBy) {
+      const inviterTgId = payload.slice(4).replace(/\D/g, "");
+      if (inviterTgId && inviterTgId !== String(ctx.from!.id)) {
+        const inviter = await db.owner.findUnique({ where: { tgUserId: BigInt(inviterTgId) } });
+        const isNew = Date.now() - owner.createdAt.getTime() < 60_000;
+        if (inviter && isNew) {
+          await db.owner.update({ where: { id: owner.id }, data: { referredBy: inviter.id } });
+          await ctx.api
+            .sendMessage(
+              Number(inviter.tgUserId),
+              `👥 Havolangiz orqali yangi foydalanuvchi qo'shildi: <b>${esc(owner.fullName)}</b>\n\n` +
+                `U hisobini to'ldirsa, birinchi to'lovidan <b>10%</b> sizga tushadi.`,
+              { parse_mode: "HTML" },
+            )
+            .catch(() => {});
+        }
+      }
+    }
     await ctx.reply(WELCOME, { parse_mode: "HTML", reply_markup: mainKeyboard });
+    const app = webAppButton("📱 Ilovani ochish");
+    if (app) {
+      await ctx.reply(
+        "📱 <b>Ilova</b> — botlaringiz, statistika va balans bitta ekranda.",
+        { parse_mode: "HTML", reply_markup: app },
+      );
+    }
   });
 
   bot.command("bekor", async (ctx) => {
@@ -159,7 +249,7 @@ export function createPlatformBot(): Bot {
 
   const helpHome = (ctx: Context, edit = false) => {
     const text =
-      `❓ <b>Yordam</b>\n\nQaysi bo'lim kerak?\n\n` +
+      `📘 <b>Qo'llanma</b>\n\nQaysi bo'lim kerak?\n\n` +
       `<i>Savolingizga javob topmasangiz shu yerga yozing — administratorga yetkazamiz.</i>`;
     return edit
       ? ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: HELP_MENU }).catch(() => {})
@@ -180,7 +270,11 @@ export function createPlatformBot(): Bot {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(section, {
       parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("◀️ Yordam bo'limlari", "h:home"),
+      reply_markup: new InlineKeyboard()
+        .text("◀️ Qo'llanma bo'limlari", "h:home")
+        .row()
+        .text("🪪 Kabinet", "cb:home")
+        .text("💳 Tariflar", "p:tariffs"),
     });
   });
 
@@ -197,7 +291,7 @@ export function createPlatformBot(): Bot {
       `🧩 <b>1-qadam: shablon tanlang</b>\n\n${lines.join("\n\n")}\n\n` +
         `<i>Har birini bosib to'liq ma'lumot olishingiz mumkin — nima qilishi, mijoz nimani ko'rishi, ` +
         `siz nimani boshqarishingiz.</i>`,
-      { parse_mode: "HTML", reply_markup: templatePicker() },
+      { parse_mode: "HTML", reply_markup: await templatePicker((await ownerOf(ctx)).id) },
     );
   });
 
@@ -223,20 +317,84 @@ export function createPlatformBot(): Bot {
         (copy?.note ? `ℹ️ <i>${esc(copy.note)}</i>` : ""),
       {
         parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("✅ Shu botni yaratish", `p:tplgo:${template.key}`)
-          .row()
-          .text("◀️ Boshqa shablonlar", "p:tpls"),
+        reply_markup: await templateActions(ctx, template.key),
       },
     );
   });
 
+  async function templateActions(ctx: Context, key: string): Promise<InlineKeyboard> {
+    const owner = await ownerOf(ctx);
+    const price = await priceOf(key);
+    const may = await ownerMayUse(owner.id, key);
+    const kb = new InlineKeyboard();
+    if (may) {
+      kb.text("✅ Shu botni yaratish", `p:tplgo:${key}`).row();
+    } else if (price) {
+      kb.text(`🔓 Ochish — ${money(price.priceUzs)}`, `p:tbuy:${key}`).row();
+    }
+    return kb.text("◀️ Boshqa shablonlar", "p:tpls");
+  }
+
+  // buying a template outright, from balance
+  bot.callbackQuery(/^p:tbuy:(.+)$/, async (ctx) => {
+    const key = ctx.match[1]!;
+    const [owner, price, template] = await Promise.all([
+      ownerOf(ctx),
+      priceOf(key),
+      Promise.resolve(templates[key]),
+    ]);
+    if (!price || !template) return ctx.answerCallbackQuery("Topilmadi");
+    await ctx.answerCallbackQuery();
+
+    const balance = await balanceOf(owner.id);
+    const kb = new InlineKeyboard();
+    if (balance >= price.priceUzs) kb.text("✅ Balansdan to'lash", `p:tbuygo:${key}`).row();
+    kb.text("➕ Balansni to'ldirish", "w:top").row().text("◀️ Orqaga", `p:tpl:${key}`);
+
+    await ctx.editMessageText(
+      `🔓 <b>${template.emoji} ${esc(template.name)}</b>\n\n` +
+        `Bu shablon alohida sotiladi: <b>${money(price.priceUzs)}</b> — bir marta to'laysiz, ` +
+        `keyin cheksiz foydalanasiz.\n\n` +
+        `Balansingiz: <b>${money(balance)}</b>` +
+        (balance < price.priceUzs ? `\n\n⚠️ Yetishmayapti: ${money(price.priceUzs - balance)}` : ""),
+      { parse_mode: "HTML", reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery(/^p:tbuygo:(.+)$/, async (ctx) => {
+    const key = ctx.match[1]!;
+    const [owner, price, template] = await Promise.all([ownerOf(ctx), priceOf(key), Promise.resolve(templates[key])]);
+    if (!price || !template) return ctx.answerCallbackQuery("Topilmadi");
+
+    try {
+      const left = await charge(owner.id, price.priceUzs, "template", { note: template.name, refId: key });
+      await db.ownerTemplate.create({
+        data: { ownerId: owner.id, templateKey: key, pricePaid: price.priceUzs },
+      });
+      await ctx.answerCallbackQuery("Ochildi ✅");
+      await ctx.editMessageText(
+        `🔓 <b>Ochildi!</b>\n\n${template.emoji} ${esc(template.name)} endi sizniki.\n` +
+          `Qolgan balans: <b>${money(left)}</b>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard().text("✅ Shu botni yaratish", `p:tplgo:${key}`),
+        },
+      );
+    } catch (err) {
+      if (err instanceof InsufficientFunds) {
+        return ctx.answerCallbackQuery({ text: "Balans yetarli emas", show_alert: true });
+      }
+      throw err;
+    }
+  });
+
   bot.callbackQuery("p:tpls", async (ctx) => {
     await ctx.answerCallbackQuery();
+    const owner = await ownerOf(ctx);
     const lines = templateList.map((t) => `${t.emoji} <b>${esc(t.name)}</b> — ${esc(t.tagline)}`);
     await ctx.editMessageText(`🧩 <b>Shablon tanlang</b>\n\n${lines.join("\n\n")}`, {
       parse_mode: "HTML",
-      reply_markup: templatePicker(),
+      reply_markup: await templatePicker(owner.id),
     });
   });
 
@@ -256,7 +414,7 @@ export function createPlatformBot(): Bot {
         `   🤖 Bir xil savol takrorlanaveradi → <b>Savol-javob</b>\n` +
         `   📋 Ariza/fikr yig'aman → <b>Anketa</b>\n\n` +
         `<i>Keyinroq boshqa shablonda yana bot yaratishingiz mumkin.</i>`,
-      { parse_mode: "HTML", reply_markup: templatePicker() },
+      { parse_mode: "HTML", reply_markup: await templatePicker((await ownerOf(ctx)).id) },
     );
   });
 
@@ -264,6 +422,11 @@ export function createPlatformBot(): Bot {
     await ctx.answerCallbackQuery();
     const template = templates[ctx.match[1]!];
     if (!template) return;
+
+    const owner = await ownerOf(ctx);
+    if (!(await ownerMayUse(owner.id, template.key))) {
+      return void ctx.answerCallbackQuery({ text: "Bu shablon hali ochilmagan", show_alert: true });
+    }
 
     setStep(SCOPE, ctx.from!.id, "await_token", { templateKey: template.key });
     await ctx.editMessageText(
@@ -277,7 +440,10 @@ export function createPlatformBot(): Bot {
         `<i>Token shunday ko'rinadi:</i>\n<code>1234567890:AAF...xyz</code>\n\n` +
         `🔒 Token shifrlanadi va yuborgan xabaringiz darhol o'chiriladi.\n\n` +
         `Bekor qilish: /bekor`,
-      { parse_mode: "HTML" },
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("◀️ Orqaga", `p:tpl:${template.key}`),
+      },
     );
   });
 
@@ -325,7 +491,7 @@ export function createPlatformBot(): Bot {
         kb.text(p.name, `pd:${p.code}`);
         if (i % 2 === 1) kb.row();
       });
-    kb.row().text("💳 To'lov qilish", "p:paypick");
+    kb.row().text("💳 To'lov qilish", "p:paypick").text("🪪 Kabinet", "cb:home");
 
     if (edit) await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
     else await ctx.reply(text, { parse_mode: "HTML", reply_markup: kb });
@@ -450,7 +616,9 @@ export function createPlatformBot(): Bot {
           .text("💳 Shu tarifni olish", "p:paypick")
           .row()
           .text("📋 Batafsil", `pd:${pick.code}`)
-          .text("◀️ Tariflar", "p:tariffs"),
+          .row()
+          .text("◀️ Orqaga", "p:guide")
+          .text("💳 Tariflar", "p:tariffs"),
       },
     );
   });
@@ -475,7 +643,18 @@ export function createPlatformBot(): Bot {
     await ctx.editMessageText("Qaysi bot uchun to'lov qilasiz?", { reply_markup: kb });
   });
 
-  bot.hears("🤖 Mening botlarim", (ctx) => listBots(ctx));
+  bot.hears("🤖 Botlarim", (ctx) => listBots(ctx));
+  bot.hears("💵 Hisob to'ldirish", (ctx) => showWallet(ctx));
+  bot.hears("📘 Qo'llanma", (ctx) => helpHome(ctx));
+  bot.hears("📱 Ilova", async (ctx) => {
+    const app = webAppButton("📱 Ilovani ochish");
+    await ctx.reply(
+      app
+        ? "📱 <b>Botxona ilovasi</b>\n\nBarcha botlaringiz, statistika, grafiklar va balans — bitta ekranda."
+        : "📱 Ilova hozircha tayyorlanmoqda.",
+      { parse_mode: "HTML", reply_markup: app },
+    );
+  });
 
   async function listBots(ctx: Context, edit = false) {
     const owner = await ownerOf(ctx);
@@ -540,6 +719,9 @@ export function createPlatformBot(): Bot {
     }
 
     const kb = new InlineKeyboard();
+    if (config.WEB_APP_URL) {
+      kb.webApp("📱 Ilovada ochish", `${config.WEB_APP_URL}?bot=${botId}`).row();
+    }
     if (access && access.status !== "staff") {
       const label =
         access.status === "active" ? "💳 Muddatni uzaytirish" : "💳 To'lov qilish";
@@ -642,6 +824,19 @@ export function createPlatformBot(): Bot {
     await showInvoice(ctx, ctx.match[1]!, ctx.match[2]!, Number(ctx.match[3]));
   });
 
+  bot.callbackQuery(/^wb:([^:]+):([^:]+):(\d+)$/, async (ctx) => {
+    await buyFromBalance(ctx, ctx.match[1]!, ctx.match[2]!, Number(ctx.match[3]));
+  });
+
+  // explicit "pay by card even though balance covers it"
+  bot.callbackQuery(/^pyc:([^:]+):([^:]+):(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    setStep(SCOPE, ctx.from!.id, "await_receipt", {
+      botId: ctx.match[1], planCode: ctx.match[2], months: Number(ctx.match[3]),
+    });
+    await showCardInvoice(ctx, ctx.match[1]!, ctx.match[2]!, Number(ctx.match[3]));
+  });
+
   bot.callbackQuery(/^p:text:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     setStep(SCOPE, ctx.from!.id, "await_welcome", { botId: ctx.match[1] });
@@ -656,6 +851,11 @@ export function createPlatformBot(): Bot {
   bot.on("message:photo", async (ctx) => {
     const photo = ctx.message.photo.at(-1);
     if (!photo) return;
+    const state = getStep(SCOPE, ctx.from!.id);
+    if (state?.data.topupAmount) {
+      await submitTopup(ctx, bot.api, photo.file_id, ctx.message.caption);
+      return;
+    }
     await submitReceipt(ctx, bot.api, { fileId: photo.file_id, text: ctx.message.caption });
   });
 
@@ -664,8 +864,23 @@ export function createPlatformBot(): Bot {
     const text = ctx.message.text.trim();
     if (!state || text.startsWith("/")) return;
 
+    if (state.step === "await_support") {
+      await takeSupportMessage(ctx, text);
+      return;
+    }
+
+    if (state.step === "await_topup_amount") {
+      const amount = Number(text.replace(/\D/g, ""));
+      if (!amount || amount < 5000) {
+        return void ctx.reply("Summa noto'g'ri. Kamida 5 000 so'm, faqat raqam yuboring.");
+      }
+      await showTopupInvoice(ctx, amount);
+      return;
+    }
+
     if (state.step === "await_receipt") {
-      await submitReceipt(ctx, bot.api, { text });
+      if (state.data.topupAmount) await submitTopup(ctx, bot.api, undefined, text);
+      else await submitReceipt(ctx, bot.api, { text });
       return;
     }
 
@@ -715,6 +930,49 @@ export function createPlatformBot(): Bot {
           status.chat.id,
           status.message_id,
           "❌ Token ishlamadi. @BotFather'dan yangisini oling yoki tokenni to'g'ri nusxalaganingizni tekshiring.",
+        )
+        .then(() => undefined);
+    }
+
+    // One record per Telegram bot. A revoked-and-regenerated token used to create
+    // a second row, and both rows polled the same bot — Telegram then hands
+    // updates to one poller at random and the bot looks broken.
+    const twin = await db.bot.findFirst({ where: { tgBotId: BigInt(me.id) } });
+    if (twin) {
+      if (twin.ownerId !== owner.id) {
+        return ctx.api
+          .editMessageText(
+            status.chat.id,
+            status.message_id,
+            "❌ Bu bot boshqa foydalanuvchida ro'yxatdan o'tgan. @BotFather'dan yangi bot oching.",
+          )
+          .then(() => undefined);
+      }
+
+      // Same owner re-adding their own bot: refresh the token in place.
+      const refreshed = seal(token);
+      await stopBot(twin.id);
+      const updated = await db.bot.update({
+        where: { id: twin.id },
+        data: {
+          tokenCipher: Buffer.from(refreshed.cipher),
+          tokenIv: Buffer.from(refreshed.iv),
+          tokenTag: Buffer.from(refreshed.tag),
+          tokenHash: hash,
+          tgUsername: me.username ?? "",
+          status: "active",
+          lastError: null,
+        },
+      });
+      clearStep(SCOPE, ctx.from!.id);
+      await startBot(updated).catch(() => {});
+      return ctx.api
+        .editMessageText(
+          status.chat.id,
+          status.message_id,
+          `♻️ <b>@${esc(me.username ?? "")}</b> allaqachon ro'yxatda edi — tokeni yangilandi va ` +
+            `bot qayta ishga tushdi. Ma'lumotlaringiz saqlanib qoldi.`,
+          { parse_mode: "HTML" },
         )
         .then(() => undefined);
     }
@@ -785,6 +1043,10 @@ export function createPlatformBot(): Bot {
         `kontent qo'shish va statistika o'sha yerda.`,
       { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
     );
+
+    // A lone animated effect is the only animation a bot can play without a
+    // Fragment username; it marks the moment the product actually starts.
+    await ctx.reply("🎉", withEffect("party")).catch(() => {});
   }
 
   // ------------------------------------------------------------ platform admin

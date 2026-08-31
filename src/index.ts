@@ -5,8 +5,10 @@ import { log } from "./lib/log.js";
 import { createPlatformBot } from "./platform/bot.js";
 import { instance, startAll, stopAll } from "./runtime/registry.js";
 import { seedPlans } from "./billing/plans.js";
+import { seedTemplatePrices } from "./billing/templates.js";
 import { backfillSubscriptions } from "./billing/subscription.js";
 import { startBillingCron } from "./billing/cron.js";
+import { startWebServer } from "./web/server.js";
 
 async function main() {
   if (!config.PLATFORM_BOT_TOKEN) {
@@ -24,26 +26,40 @@ async function main() {
     process.exit(1);
   }
 
-  const platform = createPlatformBot();
-  const me = await platform.api.getMe();
+  // getMe first: the referral link needs the bot's own username.
+  const probe = new (await import("grammy")).Api(config.PLATFORM_BOT_TOKEN);
+  const me = await probe.getMe();
+  const platform = createPlatformBot(me.username ?? "");
 
   // The blue "Menu" button in Telegram — without this users must guess commands.
   await platform.api
     .setMyCommands([
-      { command: "start", description: "Boshlash" },
-      { command: "yordam", description: "Yordam" },
-      { command: "bekor", description: "Amalni bekor qilish" },
+      { command: "start", description: "🏠 Bosh sahifa" },
+      { command: "kabinet", description: "🪪 Shaxsiy kabinet" },
+      { command: "referal", description: "🗣 Referal dasturi" },
+      { command: "yordam", description: "📘 Qo'llanma" },
+      { command: "bekor", description: "❌ Amalni bekor qilish" },
     ])
     .catch(() => {});
+
+  if (config.WEB_APP_URL) {
+    await platform.api
+      .setChatMenuButton({
+        menu_button: { type: "web_app", text: "📱 Ilova", web_app: { url: config.WEB_APP_URL } },
+      })
+      .catch(() => {});
+  }
 
   for (const adminId of config.platformAdminIds) {
     await platform.api
       .setMyCommands(
         [
-          { command: "start", description: "Boshlash" },
-          { command: "panel", description: "Boshqaruv paneli" },
-          { command: "yordam", description: "Yordam" },
-          { command: "bekor", description: "Amalni bekor qilish" },
+          { command: "start", description: "🏠 Bosh sahifa" },
+          { command: "panel", description: "🛠 Boshqaruv paneli" },
+          { command: "kabinet", description: "🪪 Shaxsiy kabinet" },
+          { command: "referal", description: "🗣 Referal dasturi" },
+          { command: "yordam", description: "📘 Qo'llanma" },
+          { command: "bekor", description: "❌ Amalni bekor qilish" },
         ],
         { scope: { type: "chat", chat_id: Number(adminId) } },
       )
@@ -51,10 +67,12 @@ async function main() {
   }
 
   await seedPlans();
+  await seedTemplatePrices();
   await backfillSubscriptions();
   await startAll();
   await resumeBroadcasts((botId) => instance(botId)?.api);
   startBillingCron(platform.api);
+  startWebServer(config.WEB_PORT, config.WEB_HOST);
 
   void platform.start({
     onStart: () => log.info("platform bot started", { username: me.username }),

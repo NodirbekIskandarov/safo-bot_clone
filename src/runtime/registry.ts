@@ -100,13 +100,15 @@ export async function startBot(record: BotRecord): Promise<void> {
   template.register({ bot, botId: record.id, settings });
 
   // Public menu for everyone; admins additionally see /admin in their own chats.
-  void bot.api.setMyCommands([{ command: "start", description: "Boshlash" }]).catch(() => {});
+  const publicCommands = template.commands;
+  void bot.api.setMyCommands(publicCommands).catch(() => {});
   for (const adminId of adminIds) {
     void bot.api
       .setMyCommands(
         [
-          { command: "start", description: "Boshlash" },
-          { command: "admin", description: "Admin panel" },
+          ...publicCommands,
+          { command: "admin", description: "⚙️ Admin panel" },
+          { command: "bekor", description: "Amalni bekor qilish" },
         ],
         { scope: { type: "chat", chat_id: Number(adminId) } },
       )

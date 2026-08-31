@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Botxona</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg: var(--tg-theme-bg-color, #17212b);
+    --card: var(--tg-theme-secondary-bg-color, #232e3c);
+    --text: var(--tg-theme-text-color, #fff);
+    --hint: var(--tg-theme-hint-color, #7d8b99);
+    --link: var(--tg-theme-link-color, #64b5ef);
+    --btn: var(--tg-theme-button-color, #3390ec);
+    --btn-text: var(--tg-theme-button-text-color, #fff);
+    --radius: 14px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:12px 12px calc(24px + env(safe-area-inset-bottom))}
+  .muted{color:var(--hint)}
+  .card{background:var(--card);border-radius:var(--radius);padding:14px;margin-bottom:10px}
+  h1{font-size:20px;margin:4px 0 14px}
+  h2{font-size:15px;margin:18px 0 8px;color:var(--hint);font-weight:600;
+    text-transform:uppercase;letter-spacing:.04em}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .row + .row{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.07)}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .stat{background:var(--card);border-radius:var(--radius);padding:14px}
+  .stat b{display:block;font-size:24px;line-height:1.2;margin-bottom:2px}
+  .stat span{color:var(--hint);font-size:12px}
+  .balance{background:linear-gradient(135deg,var(--btn),#7c4dff);border-radius:var(--radius);
+    padding:18px;margin-bottom:12px}
+  .balance b{display:block;font-size:30px;margin-top:4px}
+  .balance span{opacity:.85;font-size:13px}
+  .pill{font-size:11px;padding:3px 9px;border-radius:99px;white-space:nowrap}
+  .ok{background:rgba(76,201,124,.18);color:#4cc97c}
+  .warn{background:rgba(255,183,77,.18);color:#ffb74d}
+  .bad{background:rgba(255,110,110,.18);color:#ff6e6e}
+  .bar{display:flex;align-items:flex-end;gap:3px;height:70px;margin-top:12px}
+  .bar i{flex:1;background:var(--btn);border-radius:3px 3px 0 0;min-height:2px;opacity:.85}
+  button{width:100%;background:var(--btn);color:var(--btn-text);border:0;border-radius:12px;
+    padding:13px;font-size:15px;font-weight:600;cursor:pointer;margin-top:6px}
+  .tabs{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{padding:8px 14px;border-radius:99px;background:var(--card);color:var(--hint);
+    font-size:13px;white-space:nowrap;cursor:pointer;border:0}
+  .tab.on{background:var(--btn);color:var(--btn-text)}
+  .empty{text-align:center;padding:36px 16px;color:var(--hint)}
+  .spin{width:26px;height:26px;border:3px solid rgba(255,255,255,.15);border-top-color:var(--btn);
+    border-radius:50%;animation:s .8s linear infinite;margin:60px auto}
+  @keyframes s{to{transform:rotate(360deg)}}
+  a{color:var(--link)}
+</style>
+</head>
+<body>
+<div id="app"><div class="spin"></div></div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready(); tg?.expand();
+
+const app = document.getElementById('app');
+const uzs = n => (n ?? 0).toLocaleString('ru-RU').replace(/,/g,' ') + " so'm";
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+const KIND = {topup:'💰 To’ldirish', subscription:'📦 Obuna', template:'🧩 Shablon',
+              refund:'↩️ Qaytarish', bonus:'🎁 Bonus'};
+const TPL = {kino:'🎬 Kino', shop:'🛒 Do’kon', broadcast:'📢 Reklama', booking:'📅 Navbat',
+             support:'💬 Aloqa', contest:'🎁 Konkurs', faq:'🤖 Savol-javob', survey:'📋 Anketa'};
+const PLAN_STATUS = {trial:['🎁 Sinov','warn'], active:['✅ Faol','ok'], grace:['⚠️ Muddat tugadi','warn'],
+                     expired:['⛔️ To’lov kerak','bad'], unpaid:['⛔️ To’lov kerak','bad'],
+                     staff:['👑 Platforma','ok']};
+
+async function api(path, extra = {}) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({initData: tg?.initData ?? '', ...extra}),
+  });
+  return r.json();
+}
+
+function fail(msg) {
+  app.innerHTML = `<div class="empty"><div style="font-size:40px">😕</div>
+    <p>${esc(msg)}</p><p class="muted">Botni qaytadan oching.</p></div>`;
+}
+
+// A bot id in the launch parameter means "show this bot", otherwise the wallet view.
+const startParam = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.search).get('bot');
+
+async function renderOwner() {
+  const res = await api('/api/me');
+  if (!res.ok) return fail(res.error === 'owner' ? 'Avval botga /start bosing' : 'Ma’lumot olinmadi');
+  const d = res.data;
+
+  const bots = d.bots.length ? d.bots.map(b => {
+    const [label, cls] = PLAN_STATUS[b.planStatus] ?? ['—','warn'];
+    const cap = b.maxUsers && b.maxUsers < 1e9
+      ? `${b.users}/${b.maxUsers}` : `${b.users}`;
+    return `<div class="card" onclick="openBot('${b.id}')" style="cursor:pointer">
+      <div class="row"><b>@${esc(b.username)}</b><span class="pill ${cls}">${label}</span></div>
+      <div class="row"><span class="muted">${TPL[b.template] ?? b.template}</span>
+        <span class="muted">👥 ${cap}${b.today ? ` · bugun +${b.today}` : ''}</span></div>
+      ${b.daysLeft != null ? `<div class="muted" style="margin-top:6px;font-size:13px">${b.daysLeft} kun qoldi</div>` : ''}
+    </div>`;
+  }).join('') : `<div class="empty">Hali bot yo’q.<br><span class="muted">Botda «➕ Bot yaratish» bosing.</span></div>`;
+
+  const txs = d.txs.length ? d.txs.map(t => `<div class="row">
+      <span>${KIND[t.kind] ?? t.kind}<br><span class="muted" style="font-size:12px">${esc(t.note ?? '')}</span></span>
+      <b style="color:${t.amount > 0 ? '#4cc97c' : 'inherit'}">${t.amount > 0 ? '+' : '−'}${uzs(Math.abs(t.amount))}</b>
+    </div>`).join('') : '<p class="muted">Hali amallar yo’q.</p>';
+
+  app.innerHTML = `
+    <h1>Salom, ${esc(d.name)}${d.isPremium ? ' 💎' : ''}</h1>
+    <div class="balance"><span>Balans</span><b>${uzs(d.balance)}</b></div>
+    <button onclick="tg.close()">➕ Balansni to’ldirish</button>
+    <h2>Botlarim (${d.bots.length})</h2>${bots}
+    <h2>Amallar tarixi</h2><div class="card">${txs}</div>`;
+}
+
+async function renderBot(botId) {
+  const res = await api('/api/bot', {botId});
+  if (!res.ok) return fail(res.error === 'forbidden' ? 'Bu bot sizniki emas' : 'Ma’lumot olinmadi');
+  const d = res.data;
+  const s = d.stats;
+
+  const max = Math.max(1, ...d.chart.map(c => c.count));
+  const bars = d.chart.map(c =>
+    `<i style="height:${Math.round(c.count / max * 100)}%" title="${c.date}: ${c.count}"></i>`).join('');
+
+  const cards = [
+    ['👥', s.users, 'Obunachilar'],
+    ['🆕', s.todayUsers, 'Bugun'],
+    ['🚫', s.blocked, 'Bloklagan'],
+    ['💎', s.subs, 'Obunachi (pullik)'],
+  ];
+  if (d.template === 'kino') cards.push(['🎬', s.movies, 'Kinolar']);
+  if (d.template === 'shop') cards.push(['📦', s.products, 'Mahsulotlar']);
+  if (d.template === 'support') cards.push(['💬', s.tickets, 'Ochiq murojaat']);
+  if (d.template === 'booking') cards.push(['📅', s.bookings, 'Kelgusi navbat']);
+
+  const orders = d.orders.length ? d.orders.map(o => `<div class="row">
+      <span>#${o.number} · ${esc(o.status)}<br>
+        <span class="muted" style="font-size:12px">${esc(o.address || o.phone)}</span></span>
+      <b>${uzs(o.total)}</b></div>`).join('')
+    : '<p class="muted">Buyurtma yo’q.</p>';
+
+  app.innerHTML = `
+    <h1>@${esc(d.username)}</h1>
+    <p class="muted" style="margin-top:-8px">${TPL[d.template] ?? d.template} ·
+      ${d.status === 'active' ? '🟢 ishlayapti' : '⚪️ to’xtatilgan'}</p>
+    <h2>14 kunlik o’sish</h2>
+    <div class="card"><div class="bar">${bars}</div></div>
+    <h2>Ko’rsatkichlar</h2>
+    <div class="grid">${cards.map(([i, v, l]) =>
+      `<div class="stat"><b>${i} ${v}</b><span>${l}</span></div>`).join('')}</div>
+    ${d.template === 'shop' ? `<h2>Oxirgi buyurtmalar</h2><div class="card">${orders}</div>` : ''}`;
+}
+
+window.openBot = id => renderBot(id);
+
+(startParam && startParam !== 'wallet' ? renderBot(startParam) : renderOwner())
+  .catch(e => fail('Xatolik: ' + e.message));
+</script>
+</body>
+</html>

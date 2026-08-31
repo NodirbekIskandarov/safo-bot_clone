@@ -11,6 +11,11 @@ const schema = z.object({
   MAX_BOTS_PER_OWNER: z.coerce.number().int().positive().default(5),
   BROADCAST_RATE_PER_SEC: z.coerce.number().int().min(1).max(30).default(20),
   LOG_LEVEL: z.string().default("info"),
+  WEB_PORT: z.coerce.number().int().default(3100),
+  // Bind address: 127.0.0.1 locally, the docker bridge gateway when Caddy
+  // runs in a container and must reach this process on the host.
+  WEB_HOST: z.string().default("127.0.0.1"),
+  WEB_APP_URL: z.string().default(""),
 });
 
 const parsed = schema.safeParse(process.env);

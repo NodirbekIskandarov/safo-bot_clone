@@ -21,6 +21,18 @@ export async function openSubscription(botId: string, ownerId: string) {
   const owner = await db.owner.findUniqueOrThrow({ where: { id: ownerId } });
   const trialPlan = await db.plan.findUniqueOrThrow({ where: { code: "trial" } });
 
+  // Platform staff are never billed, so their second bot must not be born
+  // "unpaid" and stopped — accessFor already treats them as always live.
+  if (owner.isPlatformAdmin) {
+    const sub = await db.subscription.create({
+      data: {
+        botId, ownerId, planId: trialPlan.id, status: "active",
+        currentPeriodEnd: new Date(Date.now() + 3650 * 24 * 3600 * 1000),
+      },
+    });
+    return { subscription: sub, trialGranted: true };
+  }
+
   if (owner.trialUsedAt === null) {
     const [sub] = await db.$transaction([
       db.subscription.create({

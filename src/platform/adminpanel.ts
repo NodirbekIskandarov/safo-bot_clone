@@ -7,6 +7,8 @@ import { runningCount } from "../runtime/registry.js";
 import { adminTgIds, audit, isAdmin, isRootAdmin } from "./access.js";
 import { SETTING_KEYS, getSetting, setSetting } from "./settings.js";
 import { isMenuButton } from "./menu.js";
+import { templateList } from "../templates/index.js";
+import { move } from "../billing/wallet.js";
 
 const SCOPE = "padmin";
 
@@ -17,6 +19,11 @@ function panelKeyboard(pending: number): InlineKeyboard {
     .row()
     .text("👑 Adminlar", "pa:admins")
     .text("💳 Karta", "pa:card")
+    .row()
+    .text("🧩 Shablon narxlari", "pa:tpl")
+    .text("💰 Balanslar", "pa:bal")
+    .row()
+    .text("💎 Premium", "pa:prem")
     .row()
     .text("🤖 Botlar", "pa:bots");
 }
@@ -95,7 +102,7 @@ export function registerPlatformAdmin(bot: Bot) {
       (payment.owner.username ? ` (@${esc(payment.owner.username)})` : "") +
       `\n🆔 <code>${payment.owner.tgUserId}</code>\n` +
       `🤖 @${esc(payment.subscription?.bot.tgUsername ?? "—")}\n` +
-      `📦 ${esc(payment.plan.name)} — <b>${money(payment.amountUzs)}</b>` +
+      `📦 ${esc(payment.plan?.name ?? (payment.kind === "topup" ? "Balans to'ldirish" : payment.templateKey ?? "—"))} — <b>${money(payment.amountUzs)}</b>` +
       (payment.receiptText ? `\n\n💬 ${esc(payment.receiptText)}` : "");
 
     const kb = new InlineKeyboard()
@@ -265,6 +272,175 @@ export function registerPlatformAdmin(bot: Bot) {
     );
   });
 
+  // ---------------------------------------------------------------- premium
+
+  bot.callbackQuery("pa:prem", async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const members = await db.owner.findMany({ where: { isPremium: true }, take: 20 });
+    const lines = members.map(
+      (o) => `• ${esc(o.fullName)} — <code>${o.tgUserId}</code>` +
+        (o.premiumUntil ? ` (${o.premiumUntil.toLocaleDateString("uz-UZ")})` : ""),
+    );
+    await ctx.editMessageText(
+      `💎 <b>Premium a'zolar: ${members.length}</b>\n\n` +
+        (lines.join("\n") || "<i>Hali yo'q.</i>") +
+        `\n\n<b>Premium nima beradi:</b>\n` +
+        `• Barcha tariflarga <b>−10%</b> chegirma\n` +
+        `• To'lovlari navbatsiz ko'riladi\n` +
+        `• Ilovada 💎 belgisi`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("➕ Premium berish", "pa:premadd")
+          .text("➖ Bekor qilish", "pa:premdel")
+          .row()
+          .text("◀️ Orqaga", "pa:menu"),
+      },
+    );
+  });
+
+  bot.callbackQuery(/^pa:prem(add|del)$/, async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    setStep(SCOPE, ctx.from!.id, ctx.match[1] === "add" ? "await_prem_add" : "await_prem_del");
+    await ctx.editMessageText(
+      `💎 <b>Premium</b>\n\nFoydalanuvchining <b>Telegram ID</b> raqamini yuboring.\n\nBekor: /bekor`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  // ------------------------------------------------- template price control
+
+  bot.callbackQuery("pa:tpl", async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const prices = await db.templatePrice.findMany({ orderBy: { sortOrder: "asc" } });
+    const byKey = new Map(prices.map((p) => [p.key, p]));
+
+    const kb = new InlineKeyboard();
+    for (const t of templateList) {
+      const p = byKey.get(t.key);
+      const state = !p?.isEnabled ? "🚫" : p.isForSale && p.priceUzs > 0 ? `🔒 ${p.priceUzs / 1000}k` : "🆓";
+      kb.text(`${state} ${t.emoji} ${t.name}`, `pa:tplv:${t.key}`).row();
+    }
+    kb.text("◀️ Orqaga", "pa:menu");
+
+    await ctx.editMessageText(
+      `🧩 <b>Shablon narxlari</b>\n\n` +
+        `🆓 — har qanday tarifga kiradi\n` +
+        `🔒 — alohida sotiladi (bir martalik to'lov)\n` +
+        `🚫 — ro'yxatda ko'rinmaydi\n\n` +
+        `O'zgartirish uchun shablonni bosing.`,
+      { parse_mode: "HTML", reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery(/^pa:tplv:(.+)$/, async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const key = ctx.match[1]!;
+    const t = templateList.find((x) => x.key === key);
+    const p = await db.templatePrice.findUnique({ where: { key } });
+    if (!t || !p) return;
+
+    const sold = await db.ownerTemplate.count({ where: { templateKey: key } });
+    const built = await db.bot.count({ where: { templateKey: key } });
+
+    await ctx.editMessageText(
+      `${t.emoji} <b>${esc(t.name)}</b>\n\n` +
+        `Holat: ${p.isEnabled ? "✅ ko'rinadi" : "🚫 yashirilgan"}\n` +
+        `Sotuv: ${p.isForSale && p.priceUzs > 0 ? `🔒 ${money(p.priceUzs)}` : "🆓 bepul (tarifga kiradi)"}\n\n` +
+        `📊 Sotib olganlar: <b>${sold}</b>\n🤖 Yaratilgan botlar: <b>${built}</b>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("💵 Narx belgilash", `pa:tplp:${key}`)
+          .row()
+          .text(p.isForSale ? "🆓 Bepul qilish" : "🔒 Pullik qilish", `pa:tpls:${key}`)
+          .row()
+          .text(p.isEnabled ? "🚫 Yashirish" : "✅ Ko'rsatish", `pa:tple:${key}`)
+          .row()
+          .text("◀️ Orqaga", "pa:tpl"),
+      },
+    );
+  });
+
+  bot.callbackQuery(/^pa:tpls:(.+)$/, async (ctx) => {
+    if (!(await guard(ctx))) return;
+    const key = ctx.match[1]!;
+    const p = await db.templatePrice.findUniqueOrThrow({ where: { key } });
+    await db.templatePrice.update({ where: { key }, data: { isForSale: !p.isForSale } });
+    await audit(BigInt(ctx.from.id), "template.forsale", key, { isForSale: !p.isForSale });
+    await ctx.answerCallbackQuery("O'zgartirildi");
+    await ctx.editMessageText("Yangilandi.", {
+      reply_markup: new InlineKeyboard().text("◀️ Ko'rish", `pa:tplv:${key}`),
+    });
+  });
+
+  bot.callbackQuery(/^pa:tple:(.+)$/, async (ctx) => {
+    if (!(await guard(ctx))) return;
+    const key = ctx.match[1]!;
+    const p = await db.templatePrice.findUniqueOrThrow({ where: { key } });
+    await db.templatePrice.update({ where: { key }, data: { isEnabled: !p.isEnabled } });
+    await audit(BigInt(ctx.from.id), "template.enabled", key, { isEnabled: !p.isEnabled });
+    await ctx.answerCallbackQuery("O'zgartirildi");
+    await ctx.editMessageText("Yangilandi.", {
+      reply_markup: new InlineKeyboard().text("◀️ Ko'rish", `pa:tplv:${key}`),
+    });
+  });
+
+  bot.callbackQuery(/^pa:tplp:(.+)$/, async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    setStep(SCOPE, ctx.from!.id, "await_tpl_price", { key: ctx.match[1] });
+    await ctx.editMessageText(
+      `💵 <b>Narx belgilash</b>\n\nSummani so'mda yuboring (faqat raqam).\n\n` +
+        `<i>0 yozsangiz shablon bepul bo'ladi.</i>\n\nBekor: /bekor`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  // ------------------------------------------------------ balance control
+
+  bot.callbackQuery("pa:bal", async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const top = await db.owner.findMany({
+      where: { balanceUzs: { gt: 0 } },
+      orderBy: { balanceUzs: "desc" },
+      take: 10,
+    });
+    const total = await db.owner.aggregate({ _sum: { balanceUzs: true } });
+    const lines = top.map((o) => `• ${esc(o.fullName)} — <b>${money(o.balanceUzs)}</b>\n     <code>${o.tgUserId}</code>`);
+
+    await ctx.editMessageText(
+      `💰 <b>Foydalanuvchi balanslari</b>\n\n` +
+        `Jami majburiyat: <b>${money(total._sum.balanceUzs ?? 0)}</b>\n` +
+        `<i>Bu — foydalanuvchilar to'lagan, lekin hali sarflanmagan pul.</i>\n\n` +
+        (lines.join("\n") || "Hech kimda balans yo'q."),
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("➕ Balans qo'shish", "pa:baladd")
+          .row()
+          .text("◀️ Orqaga", "pa:menu"),
+      },
+    );
+  });
+
+  bot.callbackQuery("pa:baladd", async (ctx) => {
+    if (!(await guard(ctx))) return;
+    await ctx.answerCallbackQuery();
+    setStep(SCOPE, ctx.from!.id, "await_bal_add");
+    await ctx.editMessageText(
+      `➕ <b>Qo'lda balans qo'shish</b>\n\nQuyidagi ko'rinishda yuboring:\n\n` +
+        `<code>123456789 50000</code>\n\n` +
+        `<i>Telegram ID, bo'sh joy, summa. Manfiy summa yechib oladi.</i>\n\nBekor: /bekor`,
+      { parse_mode: "HTML" },
+    );
+  });
+
   // --------------------------------------------------------- text handler
 
   /** Returns true when the message was consumed by an admin wizard. */
@@ -321,6 +497,86 @@ export function registerPlatformAdmin(bot: Bot) {
       clearStep(SCOPE, ctx.from.id);
       await audit(actor, "admin.remove", id);
       return void ctx.reply(`✅ <code>${id}</code> adminlikdan olindi.`, { parse_mode: "HTML" });
+    }
+
+    if (state.step === "await_prem_add" || state.step === "await_prem_del") {
+      const grant = state.step === "await_prem_add";
+      const id = text.replace(/\D/g, "");
+      if (!id) return void ctx.reply("ID faqat raqamlardan iborat bo'lishi kerak.");
+      const target = await db.owner.findUnique({ where: { tgUserId: BigInt(id) } });
+      if (!target) return void ctx.reply("Foydalanuvchi topilmadi (u botga /start bosganmi?).");
+
+      await db.owner.update({
+        where: { id: target.id },
+        data: {
+          isPremium: grant,
+          premiumUntil: grant ? new Date(Date.now() + 365 * 24 * 3600 * 1000) : null,
+        },
+      });
+      clearStep(SCOPE, ctx.from.id);
+      await audit(actor, grant ? "premium.grant" : "premium.revoke", id);
+      await ctx.reply(grant ? `💎 ${esc(target.fullName)} — premium berildi.` : `Premium bekor qilindi.`, {
+        parse_mode: "HTML",
+      });
+      if (grant) {
+        await ctx.api
+          .sendMessage(
+            Number(target.tgUserId),
+            `💎 <b>Sizga Premium berildi!</b>\n\n` +
+              `• Barcha tariflarga <b>−10%</b> chegirma\n` +
+              `• To'lovlaringiz navbatsiz ko'riladi\n\n` +
+              `Chegirma keyingi to'lovingizda avtomatik qo'llanadi.`,
+            { parse_mode: "HTML" },
+          )
+          .catch(() => {});
+      }
+      return;
+    }
+
+    if (state.step === "await_tpl_price") {
+      const key = state.data.key as string;
+      const price = Number(text.replace(/\D/g, ""));
+      if (Number.isNaN(price)) return void ctx.reply("Faqat raqam yuboring.");
+      await db.templatePrice.update({
+        where: { key },
+        data: { priceUzs: price, isForSale: price > 0 },
+      });
+      clearStep(SCOPE, ctx.from.id);
+      await audit(actor, "template.price", key, { priceUzs: price });
+      return void ctx.reply(
+        price > 0 ? `✅ Narx belgilandi: <b>${money(price)}</b>` : "✅ Shablon bepul qilindi.",
+        { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Shablonlar", "pa:tpl") },
+      );
+    }
+
+    if (state.step === "await_bal_add") {
+      const parts = text.split(/\s+/);
+      const tgId = parts[0]?.replace(/\D/g, "");
+      const amount = Number(parts[1]?.replace(/[^\d-]/g, ""));
+      if (!tgId || !amount) return void ctx.reply("Format: <code>123456789 50000</code>", { parse_mode: "HTML" });
+
+      const target = await db.owner.findUnique({ where: { tgUserId: BigInt(tgId) } });
+      if (!target) return void ctx.reply("Bunday foydalanuvchi topilmadi (u botga /start bosganmi?).");
+
+      const left = await move(target.id, amount, amount > 0 ? "bonus" : "refund", {
+        note: `Admin ${ctx.from.id}`,
+      });
+      clearStep(SCOPE, ctx.from.id);
+      await audit(actor, "balance.manual", tgId, { amount });
+      await ctx.reply(
+        `✅ ${esc(target.fullName)} balansi: <b>${money(left)}</b> (${amount > 0 ? "+" : ""}${money(amount)})`,
+        { parse_mode: "HTML" },
+      );
+      await ctx.api
+        .sendMessage(
+          Number(target.tgUserId),
+          amount > 0
+            ? `💰 Balansingizga <b>${money(amount)}</b> qo'shildi.\nYangi balans: <b>${money(left)}</b>`
+            : `ℹ️ Balansingizdan <b>${money(-amount)}</b> yechildi.\nQolgan: <b>${money(left)}</b>`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+      return;
     }
 
     if (state.step === "await_card") {

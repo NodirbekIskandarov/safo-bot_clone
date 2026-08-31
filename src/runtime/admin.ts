@@ -4,6 +4,7 @@ import { createBroadcast, runBroadcast } from "../jobs/broadcast.js";
 import { clearStep, getStep, setStep } from "../lib/state.js";
 import { esc } from "../lib/telegram.js";
 import { accessFor } from "../billing/subscription.js";
+import { config } from "../config.js";
 import type { AppBot, BotCtx } from "./context.js";
 
 export interface AdminItem {
@@ -14,8 +15,11 @@ export interface AdminItem {
 
 const SCOPE = "tenant_admin";
 
-function menuKeyboard(extra: AdminItem[]): InlineKeyboard {
+function menuKeyboard(extra: AdminItem[], botId: string): InlineKeyboard {
   const kb = new InlineKeyboard();
+  if (config.WEB_APP_URL) {
+    kb.webApp("📱 Ilova — to'liq statistika", `${config.WEB_APP_URL}?bot=${botId}`).row();
+  }
   extra.forEach((item, i) => {
     kb.text(item.label, `adm:x:${item.id}`);
     if (i % 2 === 1) kb.row();
@@ -33,7 +37,7 @@ async function showMenu(ctx: BotCtx, extra: AdminItem[], edit = false) {
     `⚙️ <b>Admin panel</b>\n` +
     `<i>${esc(ctx.botTitle)}</i>\n\n` +
     `Kerakli bo'limni tanlang.`;
-  const kb = menuKeyboard(extra);
+  const kb = menuKeyboard(extra, ctx.botId);
   if (edit && ctx.callbackQuery) {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
   } else {

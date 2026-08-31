@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "survey";
@@ -98,6 +99,10 @@ export const surveyTemplate: BotTemplate = {
     "Savollar ro'yxatini tuzasiz, foydalanuvchi bosqichma-bosqich javob beradi. Barcha javoblarni " +
     "istalgan vaqt CSV fayl qilib yuklab olasiz — Excel'da ochiladi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "anketa", description: "Anketani boshlash" },
+  ],
 
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
@@ -154,6 +159,7 @@ export const surveyTemplate: BotTemplate = {
     });
 
     registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "q_add",
         label: "➕ Savol",

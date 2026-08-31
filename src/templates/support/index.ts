@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "support";
@@ -34,6 +35,10 @@ export const supportTemplate: BotTemplate = {
     "Mijoz botga savol yozadi, sizga darhol keladi. Javobingiz mijozga qaytadi — u sizning " +
     "shaxsiy raqamingizni bilmaydi. Har bir murojaat tiket raqami bilan saqlanadi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "murojaat", description: "Murojaat yuborish" },
+  ],
 
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
@@ -44,6 +49,7 @@ export const supportTemplate: BotTemplate = {
 
 
     registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "tickets",
         label: "💬 Murojaatlar",

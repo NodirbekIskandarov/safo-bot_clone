@@ -2,6 +2,7 @@ import { InlineKeyboard } from "grammy";
 import { db } from "../../db.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const DEFAULT_WELCOME =
@@ -16,6 +17,10 @@ export const broadcastTemplate: BotTemplate = {
     "Foydalanuvchilar botga /start bosadi va obunachiga aylanadi. Siz istalgan vaqtda hammasiga " +
     "matn, rasm, video yoki fayl yuborasiz. Kim bloklagani, kimga yetib borgani hisobot bo'lib qaytadi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "stop", description: "Obunani bekor qilish" },
+  ],
 
   register({ bot }: TemplateContext) {
     bot.command("start", async (ctx) => {
@@ -32,6 +37,7 @@ export const broadcastTemplate: BotTemplate = {
     });
 
     registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "welcome",
         label: "✏️ Salomlashuv matni",

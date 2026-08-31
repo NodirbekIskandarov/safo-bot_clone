@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
+import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "faq";
@@ -18,6 +19,10 @@ export const faqTemplate: BotTemplate = {
     "Savol va javoblar ro'yxatini kiritasiz. Mijoz savol yozsa bot kalit so'zlar bo'yicha mos " +
     "javobni topib beradi. Topolmasa — ro'yxatni ko'rsatadi. Xodimning vaqtini tejaydi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },
+  commands: [
+    { command: "start", description: "Boshlash" },
+    { command: "savollar", description: "Barcha savollar" },
+  ],
 
   register({ bot }: TemplateContext) {
     const listKeyboard = async (botId: string) => {
@@ -47,6 +52,7 @@ export const faqTemplate: BotTemplate = {
     });
 
 registerAdmin(bot, [
+      ...registerBotSubscriptions(bot),
       {
         id: "faq_add",
         label: "➕ Savol-javob",
