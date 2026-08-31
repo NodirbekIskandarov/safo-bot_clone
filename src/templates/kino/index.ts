@@ -106,7 +106,7 @@ export const kinoTemplate: BotTemplate = {
         return;
       }
       await ctx.answerCallbackQuery("Rahmat! ✅");
-      await ctx.editMessageText((ctx.settings.welcome as string) || DEFAULT_WELCOME);
+      await ctx.editMessageText((ctx.settings.welcome as string) || DEFAULT_WELCOME).catch(() => {});
     });
 
     // ---------------------------------------------------------------- admin
@@ -121,7 +121,7 @@ export const kinoTemplate: BotTemplate = {
           await ctx.editMessageText(
             "🎬 <b>Kino qo'shish</b>\n\n1-qadam: videoni shu yerga yuboring.\n\nBekor qilish: /bekor",
             { parse_mode: "HTML" },
-          );
+          ).catch(() => {});
         },
       },
       {
@@ -138,7 +138,7 @@ export const kinoTemplate: BotTemplate = {
             `📃 <b>Kinolar: ${movies.length}</b>\n\n${lines.join("\n") || "Hali kino qo'shilmagan."}\n\n` +
               `O'chirish uchun: <code>/ochir KOD</code>`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          );
+          ).catch(() => {});
         },
       },
       {
@@ -153,7 +153,7 @@ export const kinoTemplate: BotTemplate = {
               `Kanal qo'shish uchun:\n1. Botni kanalga <b>admin</b> qiling\n2. Kanal usernameni yuboring: <code>@kanal</code>\n\n` +
               `O'chirish: <code>/kanalochir @kanal</code>\nBekor: /bekor`,
             { parse_mode: "HTML" },
-          );
+          ).catch(() => {});
         },
       },
     ]);

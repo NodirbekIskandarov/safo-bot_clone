@@ -198,7 +198,7 @@ export const contestTemplate: BotTemplate = {
           setStep(SCOPE, ctx.from!.id, "await_title");
           await ctx.editMessageText("🎁 <b>Yangi konkurs</b>\n\n1-qadam: konkurs nomini yozing.", {
             parse_mode: "HTML",
-          });
+          }).catch(() => {});
         },
       },
       {
@@ -222,7 +222,7 @@ export const contestTemplate: BotTemplate = {
                 .row()
                 .text("◀️ Orqaga", "adm:menu"),
             },
-          );
+          ).catch(() => {});
         },
       },
     ]);

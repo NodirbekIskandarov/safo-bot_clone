@@ -193,7 +193,7 @@ export const shopTemplate: BotTemplate = {
       await ctx.editMessageText(`🗺 <b>${esc(region.name)}</b>\n\nTuman yoki shaharni tanlang:`, {
         parse_mode: "HTML",
         reply_markup: kb,
-      });
+      }).catch(() => {});
     });
 
     bot.callbackQuery("sh:rgback", async (ctx) => {
@@ -203,7 +203,7 @@ export const shopTemplate: BotTemplate = {
         kb.text(r.name, `sh:rg:${r.id}`);
         if (i % 2 === 1) kb.row();
       });
-      await ctx.editMessageText("🗺 <b>Viloyatni tanlang:</b>", { parse_mode: "HTML", reply_markup: kb });
+      await ctx.editMessageText("🗺 <b>Viloyatni tanlang:</b>", { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
     });
 
     bot.callbackQuery(/^sh:dt:([^:]+):(\d+)$/, async (ctx) => {
@@ -213,7 +213,7 @@ export const shopTemplate: BotTemplate = {
       if (!region || !district) return;
 
       setStep(SCOPE, ctx.from!.id, "await_mahalla", { region: region.name, district });
-      await ctx.editMessageText(`📍 ${esc(region.name)}, ${esc(district)}`, { parse_mode: "HTML" });
+      await ctx.editMessageText(`📍 ${esc(region.name)}, ${esc(district)}`, { parse_mode: "HTML" }).catch(() => {});
       await ctx.reply("🏘 <b>Mahalla yoki qishloq nomini yozing:</b>", { parse_mode: "HTML" });
     });
 
@@ -488,7 +488,7 @@ export const shopTemplate: BotTemplate = {
           setStep(`${SCOPE}_admin`, ctx.from!.id, "await_prod_title");
           await ctx.editMessageText("➕ <b>Mahsulot qo'shish</b>\n\n1-qadam: nomini yuboring.", {
             parse_mode: "HTML",
-          });
+          }).catch(() => {});
         },
       },
       {
@@ -496,7 +496,7 @@ export const shopTemplate: BotTemplate = {
         label: "📂 Bo'lim",
         handler: async (ctx) => {
           setStep(`${SCOPE}_admin`, ctx.from!.id, "await_cat_title");
-          await ctx.editMessageText("📂 <b>Bo'lim qo'shish</b>\n\nBo'lim nomini yuboring.", { parse_mode: "HTML" });
+          await ctx.editMessageText("📂 <b>Bo'lim qo'shish</b>\n\nBo'lim nomini yuboring.", { parse_mode: "HTML" }).catch(() => {});
         },
       },
       {
@@ -514,7 +514,7 @@ export const shopTemplate: BotTemplate = {
           await ctx.editMessageText(`📦 <b>Oxirgi buyurtmalar</b>\n\n${lines.join("\n") || "Hali yo'q."}`, {
             parse_mode: "HTML",
             reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu"),
-          });
+          }).catch(() => {});
         },
       },
     ]);

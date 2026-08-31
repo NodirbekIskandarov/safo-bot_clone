@@ -84,7 +84,7 @@ export const bookingTemplate: BotTemplate = {
         kb.text(d.label, `bk:d:${i}`);
         if (i % 2 === 1) kb.row();
       });
-      await ctx.editMessageText(`<b>${esc(service)}</b>\n\nQaysi kun?`, { parse_mode: "HTML", reply_markup: kb });
+      await ctx.editMessageText(`<b>${esc(service)}</b>\n\nQaysi kun?`, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
     });
 
     bot.callbackQuery(/^bk:d:(\d+)$/, async (ctx) => {
@@ -127,7 +127,7 @@ export const bookingTemplate: BotTemplate = {
       await ctx.editMessageText(`<b>${esc(day.label)}</b>\n\nSoatni tanlang (band vaqtlar ko'rsatilmagan):`, {
         parse_mode: "HTML",
         reply_markup: kb,
-      });
+      }).catch(() => {});
     });
 
     bot.callbackQuery("bk:back", async (ctx) => {
@@ -137,7 +137,7 @@ export const bookingTemplate: BotTemplate = {
         kb.text(d.label, `bk:d:${i}`);
         if (i % 2 === 1) kb.row();
       });
-      await ctx.editMessageText("Qaysi kun?", { reply_markup: kb });
+      await ctx.editMessageText("Qaysi kun?", { reply_markup: kb }).catch(() => {});
     });
 
     bot.callbackQuery(/^bk:t:(.+)$/, async (ctx) => {
@@ -145,7 +145,7 @@ export const bookingTemplate: BotTemplate = {
       const state = getStep(SCOPE, ctx.from!.id);
       if (!state?.data.dayIso) return;
       setStep(SCOPE, ctx.from!.id, "phone", { time: ctx.match[1] });
-      await ctx.editMessageText("Oxirgi qadam: telefon raqamingiz kerak.");
+      await ctx.editMessageText("Oxirgi qadam: telefon raqamingiz kerak.").catch(() => {});
       await ctx.reply("📞 Raqamingizni yuboring:", {
         reply_markup: new Keyboard().requestContact("📞 Raqamni yuborish").resized().oneTime(),
       });
@@ -273,7 +273,7 @@ export const bookingTemplate: BotTemplate = {
           await ctx.editMessageText(
             `📅 <b>Bugun: ${list.length} ta navbat</b>\n\n${lines.join("\n") || "Bo'sh kun."}`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          );
+          ).catch(() => {});
         },
       },
       {
@@ -285,7 +285,7 @@ export const bookingTemplate: BotTemplate = {
             `💈 <b>Xizmatlar ro'yxati</b>\n\nHozirgi:\n${services(ctx).map((s) => `• ${esc(s)}`).join("\n")}\n\n` +
               `O'zgartirish uchun har birini <b>yangi qatordan</b> yozib yuboring.\n\nBekor: /bekor`,
             { parse_mode: "HTML" },
-          );
+          ).catch(() => {});
         },
       },
     ]);

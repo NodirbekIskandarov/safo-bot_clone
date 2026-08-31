@@ -165,7 +165,7 @@ export const surveyTemplate: BotTemplate = {
         label: "➕ Savol",
         handler: async (ctx) => {
           setStep(ADMIN, ctx.from!.id, "await_q_prompt");
-          await ctx.editMessageText("➕ <b>Savol qo'shish</b>\n\nSavol matnini yuboring.", { parse_mode: "HTML" });
+          await ctx.editMessageText("➕ <b>Savol qo'shish</b>\n\nSavol matnini yuboring.", { parse_mode: "HTML" }).catch(() => {});
         },
       },
       {
@@ -177,7 +177,7 @@ export const surveyTemplate: BotTemplate = {
           await ctx.editMessageText(
             `📃 <b>Savollar</b>\n\n${lines.join("\n") || "Hali savol yo'q."}\n\nHammasini o'chirish: /tozala`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          );
+          ).catch(() => {});
         },
       },
       {

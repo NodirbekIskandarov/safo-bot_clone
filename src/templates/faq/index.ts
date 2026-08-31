@@ -60,7 +60,7 @@ registerAdmin(bot, [
           setStep(SCOPE, ctx.from!.id, "await_q");
           await ctx.editMessageText("➕ <b>Yangi savol</b>\n\n1-qadam: savol matnini yuboring.", {
             parse_mode: "HTML",
-          });
+          }).catch(() => {});
         },
       },
       {
@@ -77,7 +77,7 @@ registerAdmin(bot, [
             `📃 <b>Savollar: ${items.length}</b>\n\n${lines.join("\n") || "Hali yo'q."}\n\n` +
               `Hammasini o'chirish: /tozala`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          );
+          ).catch(() => {});
         },
       },
     ]);

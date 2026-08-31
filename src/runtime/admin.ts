@@ -65,7 +65,7 @@ async function stats(ctx: BotCtx) {
       `🔥 7 kunda faol: <b>${active7}</b>\n` +
       `🚫 Bloklaganlar: <b>${blocked}</b>`,
     { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-  );
+  ).catch(() => {});
 }
 
 async function users(ctx: BotCtx) {
@@ -85,7 +85,7 @@ async function users(ctx: BotCtx) {
   await ctx.editMessageText(
     `👥 <b>Oxirgi ${list.length} foydalanuvchi</b>\n\n` + (lines.join("\n") || "Hali hech kim yo'q."),
     { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-  );
+  ).catch(() => {});
 }
 
 /**
@@ -140,7 +140,7 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
         `Yubormoqchi bo'lgan xabarni shu yerga tashlang — matn, rasm, video, fayl, ovozli xabar, hammasi bo'ladi.\n\n` +
         `Bekor qilish uchun /bekor`,
       { parse_mode: "HTML" },
-    );
+    ).catch(() => {});
   });
 
   bot.callbackQuery(/^adm:x:(.+)$/, async (ctx) => {
@@ -161,7 +161,7 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
     if (!fromChatId) return;
 
     const { id, total } = await createBroadcast(ctx.botId, BigInt(ctx.from!.id), { fromChatId, messageId });
-    await ctx.editMessageText(`📤 Yuborilmoqda… 0/${total}`);
+    await ctx.editMessageText(`📤 Yuborilmoqda… 0/${total}`).catch(() => {});
 
     const statusMsg = ctx.callbackQuery.message;
     let lastShown = 0;
@@ -187,7 +187,7 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
   bot.callbackQuery("adm:bccancel", async (ctx) => {
     await ctx.answerCallbackQuery("Bekor qilindi");
     clearStep(SCOPE, ctx.from!.id);
-    await ctx.editMessageText("Bekor qilindi.");
+    await ctx.editMessageText("Bekor qilindi.").catch(() => {});
   });
 
   bot.command("bekor", async (ctx) => {

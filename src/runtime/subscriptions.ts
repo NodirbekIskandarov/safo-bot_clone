@@ -268,7 +268,7 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
           .row()
           .text("◀️ Orqaga", "adm:menu"),
       },
-    );
+    ).catch(() => {});
   }
 
   bot.callbackQuery("bs:add", async (ctx) => {
@@ -278,7 +278,7 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
     await ctx.editMessageText(
       "➕ <b>Yangi tarif</b>\n\n1-qadam: tarif nomini yozing.\n\n<i>Masalan: VIP kanal — 1 oy</i>\n\nBekor: /bekor",
       { parse_mode: "HTML" },
-    );
+    ).catch(() => {});
   });
 
   bot.callbackQuery("bs:card", async (ctx) => {
@@ -289,7 +289,7 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
       `💳 <b>To'lov kartangiz</b>\n\nObunachilaringiz shu kartaga to'laydi.\n\n` +
         `Quyidagi ko'rinishda yuboring:\n\n<code>8600 1234 5678 9012\nISM FAMILIYA</code>\n\nBekor: /bekor`,
       { parse_mode: "HTML" },
-    );
+    ).catch(() => {});
   });
 
   bot.callbackQuery("bs:clear", async (ctx) => {

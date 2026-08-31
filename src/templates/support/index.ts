@@ -68,7 +68,7 @@ export const supportTemplate: BotTemplate = {
           await ctx.editMessageText(
             `💬 <b>Ochiq murojaatlar: ${open.length}</b>\n\n${lines.join("\n") || "Hammasi yopilgan 🎉"}`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          );
+          ).catch(() => {});
         },
       },
     ]);

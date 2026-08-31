@@ -47,7 +47,7 @@ export const broadcastTemplate: BotTemplate = {
               (ctx.settings.welcome as string) || DEFAULT_WELCOME,
             )}</i>\n\nO'zgartirish uchun platforma botidagi «Sozlamalar» bo'limidan foydalaning.`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          );
+          ).catch(() => {});
         },
       },
     ]);
