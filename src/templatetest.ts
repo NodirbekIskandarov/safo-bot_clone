@@ -165,9 +165,23 @@ async function run() {
     for (const button of buttons) {
       const mark = calls.length;
       await bot.handleUpdate(cb(button.callback_data!, ADMIN_TG));
-      const answered = calls.slice(mark).some((c) => c.method === "answerCallbackQuery");
-      const acted = calls.slice(mark).some((c) => c.method.startsWith("edit") || c.method.startsWith("send"));
+      const after = calls.slice(mark);
+      const answered = after.some((c) => c.method === "answerCallbackQuery");
+      const acted = after.some((c) => c.method.startsWith("edit") || c.method.startsWith("send"));
       check(`  «${button.text}» javob beradi`, answered || acted);
+
+      // Any screen the user can land on must offer a way back.
+      const screen = after.find((c) => c.method === "editMessageText" || c.method === "sendMessage");
+      const rm = screen?.payload.reply_markup as
+        | { inline_keyboard?: { text: string }[][] }
+        | undefined;
+      const buttonsHere = (rm?.inline_keyboard ?? []).flat();
+      const isWizard = String(screen?.payload.text ?? "").includes("/bekor");
+      const hasBack = buttonsHere.some((b) => b.text.includes("◀️"));
+      if (screen && !isWizard) {
+        check(`  «${button.text}» ortga qaytish tugmasi bor`, hasBack,
+          hasBack ? "" : `tugmalar: ${buttonsHere.map((b) => b.text).join(", ") || "yo'q"}`);
+      }
     }
 
     // 5. free text must not crash the bot

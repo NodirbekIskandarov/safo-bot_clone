@@ -165,7 +165,13 @@ export const surveyTemplate: BotTemplate = {
         label: "➕ Savol",
         handler: async (ctx) => {
           setStep(ADMIN, ctx.from!.id, "await_q_prompt");
-          await ctx.editMessageText("➕ <b>Savol qo'shish</b>\n\nSavol matnini yuboring.", { parse_mode: "HTML" }).catch(() => {});
+          await ctx.editMessageText(
+            "➕ <b>Savol qo'shish</b>\n\nSavol matnini yuboring.\n\nBekor: /bekor",
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu"),
+            },
+          ).catch(() => {});
         },
       },
       {

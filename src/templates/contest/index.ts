@@ -196,9 +196,13 @@ export const contestTemplate: BotTemplate = {
         label: "➕ Konkurs",
         handler: async (ctx) => {
           setStep(SCOPE, ctx.from!.id, "await_title");
-          await ctx.editMessageText("🎁 <b>Yangi konkurs</b>\n\n1-qadam: konkurs nomini yozing.", {
-            parse_mode: "HTML",
-          }).catch(() => {});
+          await ctx.editMessageText(
+            "🎁 <b>Yangi konkurs</b>\n\n1-qadam: konkurs nomini yozing.\n\nBekor: /bekor",
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu"),
+            },
+          ).catch(() => {});
         },
       },
       {

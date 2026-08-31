@@ -486,9 +486,13 @@ export const shopTemplate: BotTemplate = {
         label: "➕ Mahsulot",
         handler: async (ctx) => {
           setStep(`${SCOPE}_admin`, ctx.from!.id, "await_prod_title");
-          await ctx.editMessageText("➕ <b>Mahsulot qo'shish</b>\n\n1-qadam: nomini yuboring.", {
-            parse_mode: "HTML",
-          }).catch(() => {});
+          await ctx.editMessageText(
+            "➕ <b>Mahsulot qo'shish</b>\n\n1-qadam: nomini yuboring.\n\nBekor: /bekor",
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu"),
+            },
+          ).catch(() => {});
         },
       },
       {
@@ -496,7 +500,13 @@ export const shopTemplate: BotTemplate = {
         label: "📂 Bo'lim",
         handler: async (ctx) => {
           setStep(`${SCOPE}_admin`, ctx.from!.id, "await_cat_title");
-          await ctx.editMessageText("📂 <b>Bo'lim qo'shish</b>\n\nBo'lim nomini yuboring.", { parse_mode: "HTML" }).catch(() => {});
+          await ctx.editMessageText(
+            "📂 <b>Bo'lim qo'shish</b>\n\nBo'lim nomini yuboring.\n\nBekor: /bekor",
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu"),
+            },
+          ).catch(() => {});
         },
       },
       {

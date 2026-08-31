@@ -58,9 +58,13 @@ registerAdmin(bot, [
         label: "➕ Savol-javob",
         handler: async (ctx) => {
           setStep(SCOPE, ctx.from!.id, "await_q");
-          await ctx.editMessageText("➕ <b>Yangi savol</b>\n\n1-qadam: savol matnini yuboring.", {
-            parse_mode: "HTML",
-          }).catch(() => {});
+          await ctx.editMessageText(
+            "➕ <b>Yangi savol</b>\n\n1-qadam: savol matnini yuboring.\n\nBekor: /bekor",
+            {
+              parse_mode: "HTML",
+              reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu"),
+            },
+          ).catch(() => {});
         },
       },
       {
