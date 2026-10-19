@@ -11,6 +11,7 @@ Restart=always
 RestartSec=5
 User=root
 Environment=NODE_ENV=production
+Environment=TZ=Asia/Tashkent
 
 # Long polling reconnects on its own; give it room to settle before a restart.
 StartLimitBurst=10

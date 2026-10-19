@@ -3,6 +3,7 @@ import type { Bot as BotRecord } from "@prisma/client";
 import { db } from "../db.js";
 import { open } from "../lib/crypto.js";
 import { log } from "../lib/log.js";
+import { withStateNamespace } from "../lib/state.js";
 import { templates } from "../templates/index.js";
 import { accessFor } from "../billing/subscription.js";
 import type { AppBot, BotCtx } from "./context.js";
@@ -10,6 +11,9 @@ import type { AppBot, BotCtx } from "./context.js";
 interface Entry {
   bot: AppBot;
   record: BotRecord;
+  /** Shared by reference with every ctx.settings of this bot. */
+  settings: Record<string, unknown>;
+  adminIds: bigint[];
 }
 
 const running = new Map<string, Entry>();
@@ -26,7 +30,7 @@ export function runningCount(): number {
   return running.size;
 }
 
-function parseAdminIds(raw: string): bigint[] {
+export function parseAdminIds(raw: string): bigint[] {
   try {
     return (JSON.parse(raw) as string[]).map((v) => BigInt(v));
   } catch {
@@ -60,7 +64,7 @@ export async function startBot(record: BotRecord): Promise<void> {
     // so the owner has a concrete reason to upgrade.
     const known = await db.botUser.findUnique({
       where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (!known && !ctx.isAdmin) {
       const access = await accessFor(record.id);
@@ -74,6 +78,15 @@ export async function startBot(record: BotRecord): Promise<void> {
         }
       }
     }
+
+    const existing = known;
+    // Someone who blocked the bot and came back is reachable again. Someone who
+    // pressed /stop stays unsubscribed until they press /start — any other tap
+    // used to silently re-subscribe them.
+    const isStart = ctx.message?.text?.startsWith("/start") ?? false;
+    const revive =
+      existing && (existing.status === "blocked_by_user" || existing.status === "banned" ||
+        (existing.status === "unsubscribed" && isStart));
 
     ctx.appUser = await db.botUser.upsert({
       where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
@@ -90,12 +103,12 @@ export async function startBot(record: BotRecord): Promise<void> {
         firstName: from.first_name,
         lastSeenAt: new Date(),
         isAdmin: ctx.isAdmin,
-        // a user who returns after blocking is active again
-        status: "active",
+        ...(revive ? { status: "active" } : {}),
       },
     });
 
-    await next();
+    // Wizards of this bot live in their own namespace (see lib/state.ts).
+    await withStateNamespace(record.id, () => next());
   });
 
   template.register({ bot, botId: record.id, settings });
@@ -138,7 +151,33 @@ export async function startBot(record: BotRecord): Promise<void> {
         .catch(() => {});
     });
 
-  running.set(record.id, { bot, record });
+  running.set(record.id, { bot, record, settings, adminIds });
+}
+
+/**
+ * Persist setting changes and apply them to the running bot immediately.
+ * Mutating the shared object means no restart, so in-flight wizards survive
+ * and the owner sees the change on the very next message.
+ */
+export async function patchSettings(botId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const record = await db.bot.findUniqueOrThrow({ where: { id: botId } });
+  const next = { ...(JSON.parse(record.settings || "{}") as Record<string, unknown>), ...patch };
+  for (const [k, v] of Object.entries(patch)) if (v === undefined || v === null) delete next[k];
+  await db.bot.update({ where: { id: botId }, data: { settings: JSON.stringify(next) } });
+
+  const entry = running.get(botId);
+  if (entry) {
+    for (const k of Object.keys(entry.settings)) if (!(k in next)) delete entry.settings[k];
+    Object.assign(entry.settings, next);
+  }
+  return next;
+}
+
+/** Replace a running bot's admin list in place (the profile screen edits it). */
+export function patchAdmins(botId: string, ids: bigint[]) {
+  const entry = running.get(botId);
+  if (!entry) return;
+  entry.adminIds.splice(0, entry.adminIds.length, ...ids);
 }
 
 export async function stopBot(botId: string): Promise<void> {
@@ -157,7 +196,9 @@ export async function reloadBot(botId: string): Promise<void> {
 }
 
 export async function startAll(): Promise<void> {
-  const records = await db.bot.findMany({ where: { status: "active" } });
+  // "error" bots are retried: a network blip during the last boot must not
+  // park a paying customer's bot until they notice and press start.
+  const records = await db.bot.findMany({ where: { status: { in: ["active", "error"] } } });
   for (const record of records) {
     // A lapsed subscription must not come back to life on restart.
     const access = await accessFor(record.id);
@@ -167,6 +208,9 @@ export async function startAll(): Promise<void> {
       continue;
     }
     try {
+      if (record.status === "error") {
+        await db.bot.update({ where: { id: record.id }, data: { status: "active", lastError: null } });
+      }
       await startBot(record);
     } catch (err) {
       log.error("bot failed to start", { botId: record.id, err });

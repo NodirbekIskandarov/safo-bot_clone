@@ -1,8 +1,9 @@
 import { InlineKeyboard } from "grammy";
 import { db } from "../db.js";
-import { clearStep, getStep, setStep } from "../lib/state.js";
+import { clearStep, getStep, resetStep, setStep } from "../lib/state.js";
 import { esc, money, sendSafe } from "../lib/telegram.js";
 import { log } from "../lib/log.js";
+import { patchSettings } from "./registry.js";
 import type { AdminItem } from "./admin.js";
 import type { AppBot, BotCtx } from "./context.js";
 
@@ -81,7 +82,7 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
       return void ctx.reply("⚠️ To'lov kartasi sozlanmagan. Bot administratoriga murojaat qiling.");
     }
 
-    setStep(SCOPE, ctx.from!.id, "await_receipt", { planId: plan.id });
+    resetStep(SCOPE, ctx.from!.id, "await_receipt", { planId: plan.id });
     await ctx.reply(
       `💎 <b>${esc(plan.title)}</b>\n\n` +
         `Summa: <b>${money(plan.priceUzs)}</b>\nMuddat: <b>${plan.days} kun</b>\n\n` +
@@ -135,20 +136,22 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
   bot.callbackQuery(/^bs:(ok|no):(.+)$/, async (ctx) => {
     if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
     const approve = ctx.match[1] === "ok";
-    const payment = await db.botPayment.findUnique({
-      where: { id: ctx.match[2]! },
+    const payment = await db.botPayment.findFirst({
+      where: { id: ctx.match[2]!, botId: ctx.botId },
       include: { botUser: true, botPlan: true },
     });
-    if (!payment || payment.status !== "pending") return ctx.answerCallbackQuery("Allaqachon ko'rilgan");
+    if (!payment) return ctx.answerCallbackQuery("Topilmadi");
 
-    await db.botPayment.update({
-      where: { id: payment.id },
+    // Conditional on "pending": two admins tapping at once cannot both apply it.
+    const claimed = await db.botPayment.updateMany({
+      where: { id: payment.id, status: "pending" },
       data: {
         status: approve ? "approved" : "rejected",
         reviewedBy: BigInt(ctx.from.id),
         reviewedAt: new Date(),
       },
     });
+    if (claimed.count === 0) return ctx.answerCallbackQuery("Allaqachon ko'rilgan");
 
     if (approve) {
       const existing = await db.botSubscription.findUnique({ where: { botUserId: payment.botUserId } });
@@ -222,16 +225,12 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
       const [card, ...rest] = text.split("\n");
       const digits = (card ?? "").replace(/\D/g, "");
       if (digits.length < 12) return void ctx.reply("Karta raqami noto'g'ri.");
-      const record = await db.bot.findUniqueOrThrow({ where: { id: ctx.botId } });
-      const settings = JSON.parse(record.settings || "{}") as Record<string, unknown>;
-      settings.payCard = digits.replace(/(\d{4})(?=\d)/g, "$1 ");
-      if (rest.length > 0) settings.payCardHolder = rest.join(" ").trim();
-      await db.bot.update({ where: { id: ctx.botId }, data: { settings: JSON.stringify(settings) } });
+      await patchSettings(ctx.botId, {
+        payCard: digits.replace(/(\d{4})(?=\d)/g, "$1 "),
+        ...(rest.length > 0 ? { payCardHolder: rest.join(" ").trim() } : {}),
+      });
       clearStep(ADMIN, ctx.from!.id);
-      return void ctx.reply(
-        `✅ Karta saqlandi.\n\n<i>Botni platforma botidan o'chirib-yoqing — yangi karta shundan keyin ko'rinadi.</i>`,
-        { parse_mode: "HTML" },
-      );
+      return void ctx.reply("✅ Karta saqlandi. Obunachilar endi shu kartani ko'radi.");
     }
     return next();
   });
@@ -251,25 +250,35 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
     const { card } = payCard(ctx);
     const lines = plans.map((p) => `• <b>${esc(p.title)}</b> — ${money(p.priceUzs)} / ${p.days} kun${p.isActive ? "" : " 🚫"}`);
 
+    const kb = new InlineKeyboard();
+    for (const p of plans) {
+      kb.text(`${p.isActive ? "✅" : "🚫"} ${p.title.slice(0, 30)}`, `bs:tg:${p.id}`).row();
+    }
+    kb.text("➕ Tarif qo'shish", "bs:add").text("💳 Karta", "bs:card").row();
+    if (plans.some((p) => p.isActive)) kb.text("🚫 Hammasini yashirish", "bs:clear").row();
+    kb.text("◀️ Orqaga", "adm:menu");
+
     await ctx.editMessageText(
       `💎 <b>Obuna tariflari</b>\n\n` +
         (lines.join("\n") || "<i>Hali tarif yo'q.</i>") +
         `\n\n👥 Faol obunachilar: <b>${active}</b>` +
         (pending > 0 ? `\n⏳ Kutilayotgan to'lovlar: <b>${pending}</b>` : "") +
         `\n💳 Karta: ${card ? `<code>${esc(card)}</code>` : "<i>sozlanmagan</i>"}` +
-        `\n\n<i>Pul to'g'ridan-to'g'ri sizning kartangizga tushadi — platforma komissiya olmaydi.</i>`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("➕ Tarif qo'shish", "bs:add")
-          .text("💳 Karta", "bs:card")
-          .row()
-          .text("🗑 Tariflarni tozalash", "bs:clear")
-          .row()
-          .text("◀️ Orqaga", "adm:menu"),
-      },
+        `\n\n<i>Tarifni bosib yoqasiz yoki yashirasiz. Yashirilgan tarif sotilmaydi, ` +
+        `lekin uni sotib olganlarning obunasi muddati tugaguncha saqlanadi.</i>` +
+        `\n<i>Pul to'g'ridan-to'g'ri sizning kartangizga tushadi — platforma komissiya olmaydi.</i>`,
+      { parse_mode: "HTML", reply_markup: kb },
     ).catch(() => {});
   }
+
+  bot.callbackQuery(/^bs:tg:(.+)$/, async (ctx) => {
+    if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
+    const plan = await db.botPlan.findFirst({ where: { id: ctx.match[1]!, botId: ctx.botId } });
+    if (!plan) return ctx.answerCallbackQuery("Topilmadi");
+    await db.botPlan.update({ where: { id: plan.id }, data: { isActive: !plan.isActive } });
+    await ctx.answerCallbackQuery(plan.isActive ? "Yashirildi" : "Yoqildi");
+    await ownerMenu(ctx);
+  });
 
   bot.callbackQuery("bs:add", async (ctx) => {
     if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
@@ -292,10 +301,25 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
     ).catch(() => {});
   });
 
+  // Deleting plans used to cascade into every paid subscription and payment.
+  // Hiding keeps paying subscribers whole and is reversible.
   bot.callbackQuery("bs:clear", async (ctx) => {
     if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
-    await db.botPlan.deleteMany({ where: { botId: ctx.botId } });
-    await ctx.answerCallbackQuery("Tozalandi");
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(
+      "🚫 <b>Barcha tariflar yashirilsinmi?</b>\n\nYangi obuna sotilmay qoladi. " +
+        "Hozirgi obunachilar muddati tugaguncha ishlayveradi.",
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("🚫 Ha, yashirish", "bs:clearyes").text("◀️ Yo'q", "bs:adm"),
+      },
+    ).catch(() => {});
+  });
+
+  bot.callbackQuery("bs:clearyes", async (ctx) => {
+    if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
+    await db.botPlan.updateMany({ where: { botId: ctx.botId }, data: { isActive: false } });
+    await ctx.answerCallbackQuery("Yashirildi");
     await ownerMenu(ctx);
   });
 

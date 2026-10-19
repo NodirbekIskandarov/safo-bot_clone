@@ -63,18 +63,24 @@ export const PLAN_SEED = [
   },
 ] as const;
 
-/** Templates that can only run on a plan selling `orders`. */
-const TEMPLATE_REQUIRES_ORDERS = new Set(["shop"]);
-
 export function featuresOf(plan: { features: string }): PlanFeatures {
   return JSON.parse(plan.features) as PlanFeatures;
 }
 
-export function planFitsTemplate(plan: { features: string }, templateKey: string): boolean {
-  if (!TEMPLATE_REQUIRES_ORDERS.has(templateKey)) return true;
-  return featuresOf(plan).orders === true;
+/** Which tariff group a template needs. Admins change it in /panel → 💳 To'lov sozlamalari. */
+export async function templatePlanGroup(templateKey: string): Promise<string> {
+  const row = await db.templatePrice.findUnique({ where: { key: templateKey }, select: { planGroup: true } });
+  return row?.planGroup ?? (templateKey === "shop" ? "business" : "any");
 }
 
+export function planFitsGroup(plan: { group: string }, planGroup: string): boolean {
+  return planGroup === "any" || plan.group === planGroup;
+}
+
+/**
+ * Seed the catalogue on first boot only. Once a plan exists the admin owns it:
+ * prices and limits are edited from /panel, and a deploy must never undo that.
+ */
 export async function seedPlans(): Promise<void> {
   for (const p of PLAN_SEED) {
     await db.plan.upsert({
@@ -84,21 +90,24 @@ export async function seedPlans(): Promise<void> {
         intervalDays: p.intervalDays, maxBotUsers: p.maxBotUsers, sortOrder: p.sortOrder,
         features: JSON.stringify(p.features),
       },
-      // Price is intentionally not overwritten: raising it must not silently
-      // re-price plans people already bought.
-      update: {
-        name: p.name, group: p.group, intervalDays: p.intervalDays,
-        maxBotUsers: p.maxBotUsers, sortOrder: p.sortOrder, features: JSON.stringify(p.features),
-      },
+      update: {},
     });
   }
   log.info("plans seeded", { count: PLAN_SEED.length });
 }
 
 export async function payablePlans(templateKey: string) {
-  const plans = await db.plan.findMany({
-    where: { isActive: true, isArchived: false, priceUzs: { gt: 0 } },
-    orderBy: { sortOrder: "asc" },
-  });
-  return plans.filter((p) => planFitsTemplate(p, templateKey));
+  const [plans, group] = await Promise.all([
+    db.plan.findMany({
+      where: { isActive: true, isArchived: false, priceUzs: { gt: 0 } },
+      orderBy: { sortOrder: "asc" },
+    }),
+    templatePlanGroup(templateKey),
+  ]);
+  return plans.filter((p) => planFitsGroup(p, group));
+}
+
+/** One day of a monthly plan, rounded to 100 so it reads cleanly. */
+export function dailyPrice(monthlyUzs: number): number {
+  return Math.max(100, Math.round(monthlyUzs / 30 / 100) * 100);
 }

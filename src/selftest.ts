@@ -10,6 +10,8 @@ import { templateList, templates } from "./templates/index.js";
 import { payablePlans, seedPlans } from "./billing/plans.js";
 import { accessFor, activate, billingTick, openSubscription } from "./billing/subscription.js";
 import { TERMS, termPrice } from "./platform/menu.js";
+import { dailyPrice } from "./billing/plans.js";
+import { clearAll, getStep, resetStep, setStep, withStateNamespace } from "./lib/state.js";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -203,6 +205,92 @@ try {
   await db.owner.delete({ where: { id: owner.id } });
 } catch (err) {
   check("billing oqimi", false, String(err));
+}
+
+console.log("\n🔁 Avto uzaytirish");
+try {
+  const owner = await db.owner.create({
+    data: { tgUserId: BigInt(Date.now() + 11), fullName: "renew-test", trialUsedAt: new Date(), balanceUzs: 1_000 },
+  });
+  const mk = async (n: number) =>
+    db.bot.create({
+      data: {
+        ownerId: owner.id, templateKey: "kino", title: `r${n}`, tgBotId: BigInt(2000 + n),
+        tgUsername: `r${n}`, tokenCipher: Buffer.from(sealed.cipher), tokenIv: Buffer.from(sealed.iv),
+        tokenTag: Buffer.from(sealed.tag), tokenHash: fingerprint(fakeToken + "r" + n), settings: "{}",
+      },
+    });
+  const start = await db.plan.findFirstOrThrow({ where: { code: "std_500" } });
+  const day = dailyPrice(start.priceUzs);
+
+  const bot = await mk(1);
+  const { subscription } = await openSubscription(bot.id, owner.id);
+  await activate(subscription.id, start.id);
+  // 30 minutes left: inside the one-hour renewal window
+  const soon = new Date(Date.now() + 30 * 60 * 1000);
+  await db.subscription.update({ where: { id: subscription.id }, data: { currentPeriodEnd: soon } });
+
+  const ev = await billingTick();
+  const renewed = await db.subscription.findUniqueOrThrow({ where: { id: subscription.id } });
+  const left = (await db.owner.findUniqueOrThrow({ where: { id: owner.id } })).balanceUzs;
+  check("1 soat qolganda balansdan 1 kun yechiladi", ev.some((e) => e.botId === bot.id && e.kind === "renewed"), `${day} so'm`);
+  check("muddat 1 kunga uzayadi", renewed.currentPeriodEnd!.getTime() - soon.getTime() === 24 * 3600 * 1000);
+  check("balans va daftar mos", left === 1_000 - day, `${left}`);
+
+  const again = await billingTick();
+  check("bir soatda ikki marta yechilmaydi", !again.some((e) => e.botId === bot.id && e.kind === "renewed"));
+
+  // no money: falls through to the normal grace flow
+  await db.subscription.update({ where: { id: subscription.id }, data: { currentPeriodEnd: new Date(Date.now() - 1000) } });
+  await db.owner.update({ where: { id: owner.id }, data: { balanceUzs: 0 } });
+  const broke = await billingTick();
+  check("pul bo'lmasa grace'ga o'tadi", broke.some((e) => e.botId === bot.id && e.kind === "grace"));
+
+  // switched off: never charges
+  await db.owner.update({ where: { id: owner.id }, data: { balanceUzs: 100_000 } });
+  const bot2 = await mk(2);
+  const second = await openSubscription(bot2.id, owner.id);
+  await activate(second.subscription.id, start.id);
+  await db.subscription.update({
+    where: { id: second.subscription.id },
+    data: { currentPeriodEnd: new Date(Date.now() + 10 * 60 * 1000), autoRenew: false },
+  });
+  const off = await billingTick();
+  check("o'chirilgan avto uzaytirish pul yechmaydi", !off.some((e) => e.botId === bot2.id && e.kind === "renewed"));
+
+  await db.owner.delete({ where: { id: owner.id } });
+} catch (err) {
+  check("avto uzaytirish oqimi", false, String(err));
+}
+
+console.log("\n🧠 Holat (wizard) izolyatsiyasi");
+{
+  const user = 777;
+  setStep("shop_cart", user, "active", { lines: ["A"] });
+  await withStateNamespace("bot-a", async () => setStep("shop_cart", user, "active", { lines: ["a"] }));
+  const inB = await withStateNamespace("bot-b", async () => getStep("shop_cart", user));
+  check("bir botdagi savat boshqa botga o'tmaydi", inB === undefined);
+  const inA = await withStateNamespace("bot-a", async () => getStep("shop_cart", user));
+  check("har bot o'z holatini ko'radi", (inA?.data.lines as string[])?.[0] === "a");
+
+  resetStep("platform", user, "await_receipt", { topupAmount: 50_000 });
+  resetStep("platform", user, "await_receipt", { botId: "x", planCode: "std_500" });
+  check("yangi to'lov eski summani meros qilmaydi", getStep("platform", user)?.data.topupAmount === undefined);
+
+  await withStateNamespace("bot-a", async () => clearAll(user, ["shop_cart"]));
+  const kept = await withStateNamespace("bot-a", async () => getStep("shop_cart", user));
+  check("/bekor savatni saqlaydi", kept !== undefined);
+  check("/bekor platformadagi holatga tegmaydi", getStep("platform", user) !== undefined);
+}
+
+{
+  const uuid = "3a3ed9b5-0c6c-4196-b397-58eb6e717028";
+  const fresh = [
+    `bc:admdel:${uuid}:${"9".repeat(13)}`, `bc:delyes:${uuid}`, `bc:slots:${uuid}`, `sup:pl:${uuid}`,
+    `pa:ple:biz_start:users`, `pa:tplg:broadcast`, `bs:clearyes`, `sh:pdel:${uuid}`, `kino:del:${uuid}`,
+  ];
+  const big = fresh.filter((c) => Buffer.byteLength(c) > 64);
+  check("yangi tugmalar ham 64 baytga sig'adi", big.length === 0, big[0] ?? "");
 }
 
 await db.$disconnect();

@@ -7,7 +7,12 @@ cd "$APP_DIR"
 
 echo "→ Zaxira nusxa"
 mkdir -p backups
-cp data/app.db "backups/app-$(date +%F-%H%M).db" 2>/dev/null || true
+# sqlite3 .backup is consistent even while the app writes; a plain cp is not.
+if command -v sqlite3 >/dev/null 2>&1; then
+  sqlite3 data/app.db ".backup 'backups/app-$(date +%F-%H%M).db'" || true
+else
+  cp data/app.db "backups/app-$(date +%F-%H%M).db" 2>/dev/null || true
+fi
 # keep two weeks of daily copies, drop the rest
 ls -1t backups/app-*.db 2>/dev/null | tail -n +15 | xargs -r rm --
 
@@ -19,7 +24,9 @@ npm install --no-audit --no-fund
 
 echo "→ Baza"
 npx prisma generate
-npx prisma db push --skip-generate --accept-data-loss
+# No --accept-data-loss: a schema change that would drop data must stop the
+# deploy, not silently delete customer records.
+npx prisma db push --skip-generate
 
 echo "→ Qayta ishga tushirish"
 systemctl restart botxona

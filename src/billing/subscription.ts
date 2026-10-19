@@ -1,6 +1,8 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "../db.js";
 import { log } from "../lib/log.js";
-import { featuresOf, type PlanFeatures } from "./plans.js";
+import { dailyPrice, featuresOf, payablePlans, type PlanFeatures } from "./plans.js";
+import { charge, InsufficientFunds } from "./wallet.js";
 
 export const GRACE_DAYS = 3;
 
@@ -67,11 +69,15 @@ export async function backfillSubscriptions(): Promise<number> {
 }
 
 /** Apply an approved payment: move to `active` and push the period forward. */
-export async function activate(subscriptionId: string, planId: string, months = 1) {
-  const [sub, plan] = await Promise.all([
-    db.subscription.findUniqueOrThrow({ where: { id: subscriptionId } }),
-    db.plan.findUniqueOrThrow({ where: { id: planId } }),
-  ]);
+export async function activate(
+  subscriptionId: string,
+  planId: string,
+  months = 1,
+  tx: Prisma.TransactionClient = db,
+) {
+  // Sequential on purpose: inside an interactive transaction queries must not race.
+  const sub = await tx.subscription.findUniqueOrThrow({ where: { id: subscriptionId } });
+  const plan = await tx.plan.findUniqueOrThrow({ where: { id: planId } });
 
   // Extend from whichever entitlement is still running — paid period OR the
   // remaining trial. Paying on day 2 of a trial must not burn the other 5 days,
@@ -82,7 +88,7 @@ export async function activate(subscriptionId: string, planId: string, months = 
   );
   const base = candidates.length > 0 ? new Date(Math.max(...candidates.map((d) => d.getTime()))) : now;
 
-  return db.subscription.update({
+  return tx.subscription.update({
     where: { id: subscriptionId },
     data: {
       planId, status: "active",
@@ -90,6 +96,24 @@ export async function activate(subscriptionId: string, planId: string, months = 
       graceEndsAt: null, warnedAt: null,
     },
   });
+}
+
+/** Premium is time-boxed: an expired membership must stop discounting. */
+export function premiumActive(owner: { isPremium: boolean; premiumUntil: Date | null }): boolean {
+  return owner.isPremium && (owner.premiumUntil === null || owner.premiumUntil > new Date());
+}
+
+/** "28 kun 19 soat 27 daqiqa" — what the owner actually wants to know. */
+export function timeLeft(until: Date | null): string | null {
+  if (!until) return null;
+  let ms = until.getTime() - Date.now();
+  if (ms <= 0) return "tugagan";
+  const d = Math.floor(ms / 86_400_000);
+  ms -= d * 86_400_000;
+  const h = Math.floor(ms / 3_600_000);
+  ms -= h * 3_600_000;
+  const m = Math.floor(ms / 60_000);
+  return [d ? `${d} kun` : "", h ? `${h} soat` : "", `${m} daqiqa`].filter(Boolean).join(" ");
 }
 
 export interface Access {
@@ -100,6 +124,9 @@ export interface Access {
   maxBotUsers: number;
   endsAt: Date | null;
   daysLeft: number | null;
+  autoRenew: boolean;
+  priceUzs: number;
+  planCode: string;
 }
 
 export async function accessFor(botId: string): Promise<Access | null> {
@@ -119,6 +146,9 @@ export async function accessFor(botId: string): Promise<Access | null> {
       maxBotUsers: Number.MAX_SAFE_INTEGER,
       endsAt: null,
       daysLeft: null,
+      autoRenew: false,
+      priceUzs: 0,
+      planCode: sub.plan.code,
     };
   }
 
@@ -133,11 +163,14 @@ export async function accessFor(botId: string): Promise<Access | null> {
     maxBotUsers: sub.plan.maxBotUsers,
     endsAt,
     daysLeft,
+    autoRenew: sub.autoRenew,
+    priceUzs: sub.plan.priceUzs,
+    planCode: sub.plan.code,
   };
 }
 
 export interface LifecycleEvent {
-  kind: "warn" | "grace" | "stopped";
+  kind: "warn" | "grace" | "stopped" | "renewed";
   botId: string;
   ownerTgId: bigint;
   botUsername: string;
@@ -155,11 +188,27 @@ export async function billingTick(): Promise<LifecycleEvent[]> {
 
   const subs = await db.subscription.findMany({
     where: { status: { in: ["trial", "active", "grace"] }, owner: { isPlatformAdmin: false } },
-    include: { bot: true, owner: true },
+    include: { bot: true, owner: true, plan: true },
   });
 
   for (const sub of subs) {
     const endsAt = sub.status === "trial" ? sub.trialEndsAt : sub.currentPeriodEnd;
+
+    // Auto-renew: one hour before the paid time runs out, buy one more day from
+    // balance. A bot whose owner keeps money on the wallet never stops.
+    if (sub.autoRenew && sub.bot.status !== "stopped") {
+      const runsOutAt = sub.status === "grace" ? now : endsAt;
+      if (runsOutAt && runsOutAt.getTime() <= now.getTime() + 65 * 60 * 1000) {
+        const renewed = await renewOneDay(sub, now);
+        if (renewed) {
+          events.push({
+            kind: "renewed", botId: sub.botId, ownerTgId: sub.owner.tgUserId,
+            botUsername: sub.bot.tgUsername, daysLeft: 1,
+          });
+          continue;
+        }
+      }
+    }
 
     // active/trial period is over -> grace
     if (sub.status !== "grace" && endsAt && endsAt <= now) {
@@ -188,7 +237,10 @@ export async function billingTick(): Promise<LifecycleEvent[]> {
     if (endsAt) {
       const daysLeft = Math.ceil((endsAt.getTime() - now.getTime()) / (24 * 3600 * 1000));
       const alreadyWarned = sub.warnedAt && sub.warnedAt.getTime() > now.getTime() - 20 * 3600 * 1000;
-      if (daysLeft <= 3 && daysLeft > 0 && !alreadyWarned) {
+      // Auto-renew with money on the wallet: there is nothing to warn about.
+      const covered =
+        sub.autoRenew && sub.plan.priceUzs > 0 && sub.owner.balanceUzs >= dailyPrice(sub.plan.priceUzs);
+      if (daysLeft <= 3 && daysLeft > 0 && !alreadyWarned && !covered) {
         await db.subscription.update({ where: { id: sub.id }, data: { warnedAt: now } });
         events.push({
           kind: "warn", botId: sub.botId, ownerTgId: sub.owner.tgUserId,
@@ -200,4 +252,53 @@ export async function billingTick(): Promise<LifecycleEvent[]> {
 
   if (events.length > 0) log.info("billing tick", { events: events.length });
   return events;
+}
+
+/**
+ * Charge one day of the bot's plan and extend it, atomically. A trial bot has
+ * no paid plan yet, so it renews on the cheapest plan that fits its audience.
+ * Returns false when the balance does not cover it — the normal grace flow
+ * then takes over and tells the owner.
+ */
+async function renewOneDay(
+  sub: { id: string; ownerId: string; planId: string; status: string; currentPeriodEnd: Date | null;
+         trialEndsAt: Date | null; botId: string; bot: { templateKey: string; tgUsername: string } },
+  now: Date,
+): Promise<boolean> {
+  const current = await db.plan.findUnique({ where: { id: sub.planId } });
+  let plan = current && current.priceUzs > 0 ? current : null;
+  if (!plan) {
+    const users = await db.botUser.count({ where: { botId: sub.botId } });
+    const options = await payablePlans(sub.bot.templateKey);
+    plan = options.filter((p) => p.maxBotUsers >= users).sort((a, b) => a.priceUzs - b.priceUzs)[0] ?? null;
+  }
+  if (!plan) return false;
+
+  const price = dailyPrice(plan.priceUzs);
+  const still = [sub.currentPeriodEnd, sub.status === "trial" ? sub.trialEndsAt : null].filter(
+    (d): d is Date => d instanceof Date && d > now,
+  );
+  const base = still.length > 0 ? new Date(Math.max(...still.map((d) => d.getTime()))) : now;
+
+  try {
+    await db.$transaction(async (tx) => {
+      await charge(sub.ownerId, price, "subscription", {
+        note: `Avto uzaytirish · 1 kun · @${sub.bot.tgUsername}`, refId: sub.id,
+      }, tx);
+      await tx.subscription.update({
+        where: { id: sub.id },
+        data: {
+          planId: plan.id, status: "active",
+          currentPeriodEnd: addDays(base, 1),
+          graceEndsAt: null, warnedAt: null,
+        },
+      });
+    });
+    log.info("subscription auto-renewed", { subscriptionId: sub.id, price });
+    return true;
+  } catch (err) {
+    if (err instanceof InsufficientFunds) return false;
+    log.error("auto-renew failed", { subscriptionId: sub.id, err });
+    return false;
+  }
 }

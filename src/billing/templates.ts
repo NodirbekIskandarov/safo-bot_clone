@@ -7,7 +7,10 @@ export async function seedTemplatePrices(): Promise<void> {
   for (const [i, t] of templateList.entries()) {
     await db.templatePrice.upsert({
       where: { key: t.key },
-      create: { key: t.key, priceUzs: 0, isForSale: false, isEnabled: true, sortOrder: i * 10 },
+      create: {
+        key: t.key, priceUzs: 0, isForSale: false, isEnabled: true, sortOrder: i * 10,
+        planGroup: t.key === "shop" ? "business" : "any",
+      },
       // Price and availability are owner decisions — never overwritten by a deploy.
       update: {},
     });

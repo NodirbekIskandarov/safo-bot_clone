@@ -325,6 +325,7 @@ model Subscription {
   currentPeriodEnd   DateTime?
   graceEndsAt        DateTime?
   warnedAt           DateTime?                 // last expiry warning, keeps cron idempotent
+  autoRenew          Boolean   @default(true)  // charge one day from balance before the period runs out
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -489,7 +490,7 @@ model BalanceTx {
   ownerId   String
   owner     Owner    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   amountUzs Int                                 // positive = credit, negative = debit
-  kind      String                              // topup | subscription | template | refund | bonus
+  kind      String                              // topup | subscription | template | refund | bonus | adjust
   note      String?
   refId     String?                             // payment / subscription / template it relates to
   balanceAfter Int
@@ -504,6 +505,7 @@ model SupportMessage {
   text      String
   answered  Boolean  @default(false)
   answer    String?
+  answeredBy BigInt?
   createdAt DateTime @default(now())
 
   @@index([answered, createdAt])
@@ -515,6 +517,7 @@ model TemplatePrice {
   priceUzs   Int      @default(0)               // 0 = included with any subscription
   isForSale  Boolean  @default(false)           // true = must be bought before use
   isEnabled  Boolean  @default(true)            // false = hidden from the picker
+  planGroup  String   @default("any")           // any | business — which tariffs may run this template
   sortOrder  Int      @default(0)
   updatedAt  DateTime @updatedAt
 }

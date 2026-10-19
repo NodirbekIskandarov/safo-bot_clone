@@ -84,10 +84,19 @@ Platforma boti                      Yaratilgan bot
   → shablon tanlash                                  • kontent qo'shish
   → token yuborish                                   • 📢 xabar yuborish
   → 🎉 bot ishlaydi                                  • 📊 statistika
-🤖 Mening botlarim                                   • 👥 foydalanuvchilar
-  → to'xtatish / o'chirish
-  → salomlashuv matni
+🤖 Botlarim → botni tanlash                          • 👥 foydalanuvchilar
+  → ⚙️ Sozlash   salomlashuv, adminlar, obuna kartasi, xizmatlar, ish vaqtlari
+  → 👤 Profil    botning nomi, tavsifi, bio va rasmi
+  → 📊 Tarif     limitlar, tarifni o'zgartirish
+  → 💵 To'lov    muddat tanlash, balans yoki karta
+  → 🔁 Avto uzaytirish, 📈 Statistika (Web), ⏸ to'xtatish, 🗑 o'chirish
 ```
+
+Pastki menyu: ➕ Bot yaratish · 🤖 Botlarim · 💼 Daromad · 📱 Shaxsiy kabinet · 💳 Hisob to'ldirish ·
+🗣 Referal · 🌐 Saytga kirish · 📚 Qo'llanma · ✉️ Murojaat. Platforma adminlarida qo'shimcha
+**🛠 Boshqaruv paneli** tugmasi bor — `/panel` yozish shart emas.
+
+Sozlamalar botni qayta ishga tushirmasdan darhol kuchga kiradi.
 
 ---
 
@@ -98,7 +107,7 @@ Click/Payme emas — **karta orqali qo'lda tasdiqlash**. Yuridik shaxs va shartn
 ```
 Mijoz                                 Siz (admin)
 ─────                                 ───────────
-🤖 Mening botlarim → 💳 To'lov
+🤖 Botlarim → bot → 💵 To'lov
   → tarif tanlaydi
   → karta raqami + summa chiqadi
   → pul o'tkazadi
@@ -107,7 +116,14 @@ Mijoz                                 Siz (admin)
   ◄── "to'lov tasdiqlandi"        ◄──  bot darhol ishga tushadi
 ```
 
-Karta raqamini `/panel → 💳 Karta` orqali o'rnatasiz — kodga tegmasdan istalgan vaqt o'zgartiriladi.
+Karta raqamini `🛠 Boshqaruv paneli → 💳 To'lov sozlamalari → 💳 Karta` orqali o'rnatasiz.
+
+### Avto uzaytirish
+
+Har bir bot kartochkasida yoqiladi yoki o'chiriladi, standart holatda yoqilgan. Muddat tugashiga
+1 soat qolganda balansdan **1 kunlik to'lov** (oylik narx ÷ 30, 100 so'mga yaxlitlangan) yechiladi
+va muddat 1 kunga uzayadi. Balansda pul bo'lsa bot to'xtamaydi, bo'lmasa odatdagi muhlat boshlanadi.
+Sinovdagi bot obunachilar soniga mos eng arzon tarifga o'tadi.
 
 ### Obuna hayot sikli
 
@@ -145,8 +161,10 @@ muddat tugaganda, bot to'xtaganda. Cron **idempotent** — ikki marta ishlasa ha
 Muddat tanlanadi: **1 oy** · **3 oy (−10%)** · **12 oy (−20%)**. Uzoq muddat naqd pulni oldindan
 keltiradi va churn'ni kamaytiradi.
 
-Narxlar `src/billing/plans.ts` da. **Narx o'zgartirilsa eski mijozlar eski narxda qoladi** —
-seed narxni qayta yozmaydi.
+Tariflar faqat birinchi ishga tushishda `src/billing/plans.ts` dan yaratiladi. Keyin ularni admin
+boshqaradi: `🛠 Boshqaruv paneli → 💳 To'lov sozlamalari → 📦 Tariflar` — narx, obunachi limiti,
+kunlik xabar limiti, sotuvga qo'yish. Deploy ularni qayta yozmaydi. Har bir shablonning bir
+martalik narxi va qaysi tarif guruhida ishlashi `🧩 Shablonlar` bo'limida belgilanadi.
 
 ---
 
@@ -155,10 +173,11 @@ seed narxni qayta yozmaydi.
 | | |
 |---|---|
 | **Asosiy admin** | `.env` dagi `PLATFORM_ADMIN_IDS`. Bot orqali olib bo'lmaydi |
-| **Qo'shilgan admin** | `/panel → 👑 Adminlar → ➕`. To'liq huquqli — **o'zi ham yangi admin qo'sha oladi** |
+| **Qo'shilgan admin** | `🛠 Boshqaruv paneli → 👑 Adminlar → ➕`. To'liq huquqli — **o'zi ham yangi admin qo'sha oladi** |
 
-Admin huquqlari: to'lovlarni tasdiqlash, karta o'zgartirish, statistika, barcha botlar ro'yxati,
-admin qo'shish/olib tashlash. Har bir amal `AuditLog` ga yoziladi.
+Admin huquqlari: to'lovlarni tasdiqlash, to'lov sozlamalari (karta, tariflar, shablon narxlari),
+murojaatlarga javob berish, statistika, barcha botlar ro'yxati, admin qo'shish/olib tashlash.
+Har bir amal `AuditLog` ga yoziladi.
 
 Platforma adminlarining **o'z botlari bepul** — obuna ularga tegmaydi.
 
@@ -171,9 +190,10 @@ src/
 ├── index.ts              bootstrap: platforma boti + barcha tenant botlar
 ├── config.ts             .env validatsiyasi (zod)
 ├── platform/
-│   ├── bot.ts            bot yaratish sehrgari, "mening botlarim"
+│   ├── bot.ts            pastki menyu, bot yaratish sehrgari, tariflar
+│   ├── botcard.ts        bot kartochkasi: sozlash, profil, tarif, to'lov, avto uzaytirish
 │   ├── payments.ts       karta to'lovi + admin tasdiqlash
-│   ├── adminpanel.ts     /panel — to'lovlar, adminlar, karta, statistika
+│   ├── adminpanel.ts     boshqaruv paneli — to'lovlar, to'lov sozlamalari, murojaatlar, adminlar
 │   ├── access.ts         admin huquqlari, audit
 │   └── settings.ts       karta raqami kabi sozlamalar (DB'da)
 ├── billing/

@@ -5,6 +5,7 @@ import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
 import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
+import { patchSettings } from "../../runtime/registry.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "booking";
@@ -30,7 +31,27 @@ function upcomingDays(): { label: string; date: Date }[] {
   return out;
 }
 
-const SLOTS = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
+export const DEFAULT_SLOTS = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
+
+/** Working hours are the owner's: set from ⚙️ Sozlash in the platform bot. */
+function slotsOf(ctx: BotCtx): string[] {
+  const raw = ctx.settings.slots;
+  return Array.isArray(raw) && raw.length > 0 ? (raw as string[]) : DEFAULT_SLOTS;
+}
+
+/** "9:00, 10.30 14" → ["09:00","10:30","14:00"]; null when nothing parses. */
+export function parseSlots(text: string): string[] | null {
+  const out = new Set<string>();
+  for (const part of text.split(/[\s,;]+/).filter(Boolean)) {
+    const m = /^(\d{1,2})(?:[:.](\d{2}))?$/.exec(part);
+    if (!m) return null;
+    const h = Number(m[1]);
+    const min = Number(m[2] ?? "0");
+    if (h > 23 || min > 59) return null;
+    out.add(`${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`);
+  }
+  return out.size > 0 ? [...out].sort() : null;
+}
 
 export const bookingTemplate: BotTemplate = {
   key: "booking",
@@ -106,7 +127,7 @@ export const bookingTemplate: BotTemplate = {
       );
 
       const now = new Date();
-      const free = SLOTS.filter((s) => {
+      const free = slotsOf(ctx).filter((s) => {
         if (takenTimes.has(s)) return false;
         const [h, m] = s.split(":").map(Number);
         const slot = new Date(day.date);
@@ -216,15 +237,9 @@ export const bookingTemplate: BotTemplate = {
         if (admin?.step === "await_services") {
           const list = text.split("\n").map((s) => s.trim()).filter(Boolean);
           if (list.length === 0) return ctx.reply("Kamida bitta xizmat yozing.");
-          const record = await db.bot.findUniqueOrThrow({ where: { id: ctx.botId } });
-          const settings = JSON.parse(record.settings || "{}") as Record<string, unknown>;
-          settings.services = list;
-          await db.bot.update({ where: { id: ctx.botId }, data: { settings: JSON.stringify(settings) } });
+          await patchSettings(ctx.botId, { services: list });
           clearStep(`${SCOPE}_admin`, ctx.from!.id);
-          return ctx.reply(
-            `✅ ${list.length} ta xizmat saqlandi.\n\n<i>Yangi ro'yxat bot qayta yuklangach kuchga kiradi — platforma botidan botni o'chirib-yoqing.</i>`,
-            { parse_mode: "HTML" },
-          );
+          return ctx.reply(`✅ ${list.length} ta xizmat saqlandi. Mijozlar endi yangi ro'yxatni ko'radi.`);
         }
       }
       return next();
@@ -233,11 +248,11 @@ export const bookingTemplate: BotTemplate = {
     bot.callbackQuery(/^bk:st:(\w+):(.+)$/, async (ctx) => {
       if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
       const [, status, id] = ctx.match;
-      const booking = await db.booking.update({
-        where: { id: id! },
-        data: { status: status! },
-        include: { botUser: true },
-      });
+      if (!["confirmed", "canceled", "done"].includes(status!)) return ctx.answerCallbackQuery();
+      // Scoped to this bot: an id from another tenant must not be writable here.
+      const res = await db.booking.updateMany({ where: { id: id!, botId: ctx.botId }, data: { status: status! } });
+      if (res.count === 0) return ctx.answerCallbackQuery("Topilmadi");
+      const booking = await db.booking.findUniqueOrThrow({ where: { id: id! }, include: { botUser: true } });
       await ctx.answerCallbackQuery("Yangilandi");
       await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
 
@@ -290,10 +305,5 @@ export const bookingTemplate: BotTemplate = {
         },
       },
     ]);
-
-    bot.command("bekor", async (ctx) => {
-      clearStep(SCOPE, ctx.from!.id);
-      clearStep(`${SCOPE}_admin`, ctx.from!.id);
-    });
   },
 };

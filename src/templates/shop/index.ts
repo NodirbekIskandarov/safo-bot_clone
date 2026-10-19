@@ -51,12 +51,21 @@ async function showCatalog(ctx: BotCtx) {
     kb.text(c.title, `sh:cat:${c.id}`);
     if (i % 2 === 1) kb.row();
   });
+  const loose = await db.product.count({
+    where: { botId: ctx.botId, isActive: true, OR: [{ categoryId: null }, { category: { isActive: false } }] },
+  });
+  if (loose > 0) kb.row().text("🛍 Boshqa mahsulotlar", "sh:cat:none");
   await ctx.reply("🛍 <b>Katalog</b>\n\nBo'limni tanlang:", { parse_mode: "HTML", reply_markup: kb });
 }
 
 async function showProducts(ctx: BotCtx, categoryId: string | null) {
   const products = await db.product.findMany({
-    where: { botId: ctx.botId, isActive: true, ...(categoryId ? { categoryId } : {}) },
+    where: {
+      botId: ctx.botId, isActive: true,
+      ...(categoryId === "none"
+        ? { OR: [{ categoryId: null }, { category: { isActive: false } }] }
+        : categoryId ? { categoryId } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: 30,
   });
@@ -379,13 +388,70 @@ export const shopTemplate: BotTemplate = {
         if (admin?.step === "await_prod_price") {
           const price = Number(text.replace(/\D/g, ""));
           if (!price) return ctx.reply("Narx noto'g'ri. Faqat raqam yuboring, masalan 45000");
-          setStep(`${SCOPE}_admin`, ctx.from!.id, "await_prod_photo", { priceUzs: price });
+          const categories = await db.category.findMany({
+            where: { botId: ctx.botId, isActive: true }, orderBy: { sortOrder: "asc" },
+          });
+          if (categories.length > 1) {
+            setStep(`${SCOPE}_admin`, ctx.from!.id, "await_prod_cat", { priceUzs: price });
+            const kb = new InlineKeyboard();
+            categories.forEach((c, i) => {
+              kb.text(c.title, `sh:pc:${c.id}`);
+              if (i % 2 === 1) kb.row();
+            });
+            return ctx.reply("3-qadam: qaysi bo'limga qo'shamiz?", { reply_markup: kb });
+          }
+          setStep(`${SCOPE}_admin`, ctx.from!.id, "await_prod_photo", {
+            priceUzs: price, categoryId: categories[0]?.id ?? null,
+          });
           return ctx.reply("3-qadam: mahsulot rasmini yuboring.\n\nRasmsiz qo'shish uchun: /otkaz");
         }
       }
 
       return next();
     });
+
+    bot.callbackQuery(/^sh:pc:(.+)$/, async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      const admin = getStep(`${SCOPE}_admin`, ctx.from!.id);
+      if (admin?.step !== "await_prod_cat") return ctx.answerCallbackQuery();
+      const category = await db.category.findFirst({ where: { id: ctx.match[1]!, botId: ctx.botId } });
+      if (!category) return ctx.answerCallbackQuery("Topilmadi");
+      await ctx.answerCallbackQuery();
+      setStep(`${SCOPE}_admin`, ctx.from!.id, "await_prod_photo", { categoryId: category.id });
+      await ctx.editMessageText(`📂 ${esc(category.title)}`, { parse_mode: "HTML" }).catch(() => {});
+      await ctx.reply("4-qadam: mahsulot rasmini yuboring.\n\nRasmsiz qo'shish uchun: /otkaz");
+    });
+
+    bot.callbackQuery(/^sh:pdel:(.+)$/, async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      // Soft delete: past orders keep their snapshot, the catalogue stops showing it.
+      await db.product.updateMany({ where: { id: ctx.match[1]!, botId: ctx.botId }, data: { isActive: false } });
+      await ctx.answerCallbackQuery("O'chirildi");
+      await productAdminList(ctx);
+    });
+
+    bot.callbackQuery(/^sh:cdel:(.+)$/, async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      await db.category.updateMany({ where: { id: ctx.match[1]!, botId: ctx.botId }, data: { isActive: false } });
+      await ctx.answerCallbackQuery("O'chirildi");
+      await productAdminList(ctx);
+    });
+
+    async function productAdminList(ctx: BotCtx) {
+      const [products, categories] = await Promise.all([
+        db.product.findMany({ where: { botId: ctx.botId, isActive: true }, orderBy: { createdAt: "desc" }, take: 25 }),
+        db.category.findMany({ where: { botId: ctx.botId, isActive: true }, orderBy: { sortOrder: "asc" } }),
+      ]);
+      const kb = new InlineKeyboard();
+      for (const c of categories) kb.text(`🗑 📂 ${c.title.slice(0, 30)}`, `sh:cdel:${c.id}`).row();
+      for (const p of products) kb.text(`🗑 ${p.title.slice(0, 28)} · ${money(p.priceUzs)}`, `sh:pdel:${p.id}`).row();
+      kb.text("◀️ Orqaga", "adm:menu");
+      await ctx.editMessageText(
+        `🗂 <b>Katalog</b>\n\n📂 Bo'limlar: <b>${categories.length}</b>\n🛍 Mahsulotlar: <b>${products.length}</b>\n\n` +
+          `<i>O'chirish uchun bosing. Bo'lim o'chsa, undagi mahsulotlar katalogda bo'limsiz ko'rinadi.</i>`,
+        { parse_mode: "HTML", reply_markup: kb },
+      ).catch(() => {});
+    }
 
     bot.command("otkaz", async (ctx) => {
       if (!ctx.isAdmin) return;
@@ -405,11 +471,10 @@ export const shopTemplate: BotTemplate = {
     async function saveProduct(ctx: BotCtx, photoFileId: string | null) {
       const admin = getStep(`${SCOPE}_admin`, ctx.from!.id);
       if (!admin) return;
-      const category = await db.category.findFirst({ where: { botId: ctx.botId }, orderBy: { sortOrder: "asc" } });
       await db.product.create({
         data: {
           botId: ctx.botId,
-          categoryId: category?.id ?? null,
+          categoryId: (admin.data.categoryId as string | null | undefined) ?? null,
           title: admin.data.title as string,
           priceUzs: admin.data.priceUzs as number,
           photoFileId,
@@ -471,14 +536,15 @@ export const shopTemplate: BotTemplate = {
     bot.callbackQuery(/^sh:ord:(\w+):(.+)$/, async (ctx) => {
       if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
       const [, status, orderId] = ctx.match;
-      const order = await db.order.update({
-        where: { id: orderId! },
-        data: { status: status! },
-        include: { botUser: true },
-      });
+      if (!["confirmed", "delivering", "canceled", "done"].includes(status!)) return ctx.answerCallbackQuery();
+      // Scoped to this bot: an id from another tenant must not be writable here.
+      const res = await db.order.updateMany({ where: { id: orderId!, botId: ctx.botId }, data: { status: status! } });
+      if (res.count === 0) return ctx.answerCallbackQuery("Topilmadi");
+      const order = await db.order.findUniqueOrThrow({ where: { id: orderId! }, include: { botUser: true } });
       await ctx.answerCallbackQuery("Holat yangilandi");
 
       const label: Record<string, string> = {
+        delivering: "🚚 Buyurtmangiz yo'lda!",
         confirmed: "✅ Buyurtmangiz tasdiqlandi!",
         canceled: "❌ Buyurtmangiz bekor qilindi.",
         done: "📦 Buyurtmangiz yetkazildi. Rahmat!",
@@ -491,7 +557,14 @@ export const shopTemplate: BotTemplate = {
           ),
         { botId: ctx.botId, botUserId: order.botUserId },
       );
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      // Keep the buttons that still make sense, so the order can move on.
+      const nextKb =
+        status === "confirmed"
+          ? new InlineKeyboard().text("🚚 Yo'lda", `sh:ord:delivering:${order.id}`).text("📦 Yetkazildi", `sh:ord:done:${order.id}`)
+          : status === "delivering"
+            ? new InlineKeyboard().text("📦 Yetkazildi", `sh:ord:done:${order.id}`)
+            : undefined;
+      await ctx.editMessageReplyMarkup({ reply_markup: nextKb }).catch(() => {});
     });
 
     // ---------------------------------------------------------------- admin
@@ -526,6 +599,7 @@ export const shopTemplate: BotTemplate = {
           ).catch(() => {});
         },
       },
+      { id: "catalog", label: "🗂 Katalog", handler: (ctx) => productAdminList(ctx) },
       {
         id: "orders",
         label: "📦 Buyurtmalar",

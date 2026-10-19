@@ -3,7 +3,7 @@ import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
 import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
-import { mainKeyboard } from "../../runtime/keyboard.js";
+import { isReservedLabel, mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
@@ -61,6 +61,11 @@ async function record(ctx: BotCtx, value: string) {
     await ctx.reply("Iltimos, faqat raqam kiriting.");
     return true;
   }
+  const options = JSON.parse(question.options) as string[];
+  if (question.type === "choice" && options.length > 0 && !options.includes(value)) {
+    await ctx.reply("Iltimos, tugmalardan birini tanlang.");
+    return true;
+  }
 
   answers[question.prompt] = value;
   setStep(SCOPE, ctx.from!.id, "answering", { answers, index: index + 1 });
@@ -85,7 +90,12 @@ async function finish(ctx: BotCtx, surveyId: string) {
 function toCsv(rows: Record<string, string>[]): string {
   if (rows.length === 0) return "";
   const headers = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const escape = (v: string) => `"${(v ?? "").replace(/"/g, '""')}"`;
+  // A leading = + - @ makes Excel evaluate the cell as a formula; a quote
+  // prefix keeps answers typed by strangers as plain text.
+  const escape = (v: string) => {
+    const safe = /^[=+\-@\t\r]/.test(v ?? "") ? `'${v}` : (v ?? "");
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
   return [headers.map(escape).join(","), ...rows.map((r) => headers.map((h) => escape(r[h] ?? "")).join(","))].join(
     "\n",
   );
@@ -110,7 +120,7 @@ export const surveyTemplate: BotTemplate = {
     bot.command("start", async (ctx) => {
       const survey = await activeSurvey(ctx.botId);
       await ctx.reply((ctx.settings.welcome as string) || DEFAULT_WELCOME, {
-        reply_markup: ctx.isAdmin ? new InlineKeyboard().text("⚙️ Admin panel", "adm:menu") : undefined,
+        reply_markup: await mainKeyboard(ctx, surveyTemplate.menuButtons),
       });
 
       if (!survey || survey.questions.length === 0) {
@@ -136,28 +146,64 @@ export const surveyTemplate: BotTemplate = {
     bot.on("message:text", async (ctx, next) => {
       const text = ctx.message.text.trim();
       if (text.startsWith("/")) return next();
+      // A menu tap is not an answer: leave the questionnaire and let the menu run.
+      if (isReservedLabel(text, surveyTemplate.menuButtons)) {
+        clearStep(SCOPE, ctx.from!.id);
+        return next();
+      }
 
       if (ctx.isAdmin) {
         const admin = getStep(ADMIN, ctx.from!.id);
 
         if (admin?.step === "await_q_prompt") {
-          const survey =
-            (await activeSurvey(ctx.botId)) ??
-            (await db.survey.create({
-              data: { botId: ctx.botId, title: "Anketa" },
-              include: { questions: true },
-            }));
-          const count = await db.surveyQuestion.count({ where: { surveyId: survey.id } });
-          await db.surveyQuestion.create({
-            data: { surveyId: survey.id, order: count, type: "text", prompt: text },
+          setStep(ADMIN, ctx.from!.id, "await_q_type", { prompt: text });
+          return ctx.reply("2-qadam: javob turi qanday?", {
+            reply_markup: new InlineKeyboard()
+              .text("📝 Matn", "sv:t:text").text("🔢 Raqam", "sv:t:number").row()
+              .text("📞 Telefon", "sv:t:phone").text("🔘 Variantlar", "sv:t:choice"),
           });
-          clearStep(ADMIN, ctx.from!.id);
-          return ctx.reply(`✅ ${count + 1}-savol qo'shildi.\n\nYana qo'shish: /admin → ➕ Savol`);
+        }
+
+        if (admin?.step === "await_q_options") {
+          const options = text.split("\n").map((o) => o.trim()).filter(Boolean).slice(0, 12);
+          if (options.length < 2) return ctx.reply("Kamida 2 ta variant yozing, har birini yangi qatordan.");
+          await saveQuestion(ctx, admin.data.prompt as string, "choice", options);
+          return;
         }
       }
 
       const handled = await record(ctx, text);
       if (!handled) return next();
+    });
+
+    async function saveQuestion(ctx: BotCtx, prompt: string, type: string, options: string[] = []) {
+      const survey =
+        (await activeSurvey(ctx.botId)) ??
+        (await db.survey.create({ data: { botId: ctx.botId, title: "Anketa" }, include: { questions: true } }));
+      const count = await db.surveyQuestion.count({ where: { surveyId: survey.id } });
+      await db.surveyQuestion.create({
+        data: { surveyId: survey.id, order: count, type, prompt, options: JSON.stringify(options) },
+      });
+      clearStep(ADMIN, ctx.from!.id);
+      await ctx.reply(`✅ ${count + 1}-savol qo'shildi.`, {
+        reply_markup: new InlineKeyboard().text("➕ Yana savol", "adm:x:q_add").text("⚙️ Panel", "adm:menu"),
+      });
+    }
+
+    bot.callbackQuery(/^sv:t:(text|number|phone|choice)$/, async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      const admin = getStep(ADMIN, ctx.from!.id);
+      if (admin?.step !== "await_q_type") return ctx.answerCallbackQuery();
+      await ctx.answerCallbackQuery();
+      const type = ctx.match[1]!;
+      if (type === "choice") {
+        setStep(ADMIN, ctx.from!.id, "await_q_options");
+        return void ctx.editMessageText("3-qadam: variantlarni yozing — har birini <b>yangi qatordan</b>.", {
+          parse_mode: "HTML",
+        }).catch(() => {});
+      }
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await saveQuestion(ctx, admin.data.prompt as string, type);
     });
 
     bot.hears("📝 Anketani to'ldirish", async (ctx) => {
@@ -193,7 +239,10 @@ export const surveyTemplate: BotTemplate = {
         label: "📃 Savollar",
         handler: async (ctx) => {
           const survey = await activeSurvey(ctx.botId);
-          const lines = (survey?.questions ?? []).map((q, i) => `${i + 1}. ${esc(q.prompt)}`);
+          const typeLabel: Record<string, string> = { text: "📝", number: "🔢", phone: "📞", choice: "🔘" };
+          const lines = (survey?.questions ?? []).map(
+            (q, i) => `${i + 1}. ${typeLabel[q.type] ?? ""} ${esc(q.prompt)}`,
+          );
           await ctx.editMessageText(
             `📃 <b>Savollar</b>\n\n${lines.join("\n") || "Hali savol yo'q."}\n\nHammasini o'chirish: /tozala`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },

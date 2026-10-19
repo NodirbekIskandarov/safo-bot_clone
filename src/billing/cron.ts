@@ -13,6 +13,9 @@ async function tick(api: Api) {
     const events = await billingTick();
 
     for (const e of events) {
+      // Daily renewals are silent; the ledger in the cabinet shows each one.
+      if (e.kind === "renewed") continue;
+
       if (e.kind === "stopped") {
         await stopBot(e.botId);
         await db.bot.update({ where: { id: e.botId }, data: { status: "stopped" } });
@@ -21,7 +24,8 @@ async function tick(api: Api) {
       const text =
         e.kind === "warn"
           ? `⏳ <b>Eslatma</b>\n\n@${e.botUsername} obunasi <b>${e.daysLeft} kundan</b> keyin tugaydi.\n\n` +
-            `«🤖 Mening botlarim» → «💳 To'lov qilish»`
+            `Balansni to'ldirsangiz avto uzaytirish botni to'xtatmaydi.\n` +
+            `«🤖 Botlarim» → botingiz → «💵 To'lov»`
           : e.kind === "grace"
             ? `⚠️ <b>Obuna muddati tugadi</b>\n\n@${e.botUsername} hozircha ishlayapti, lekin <b>${e.daysLeft} kundan</b> ` +
               `keyin to'xtatiladi.\n\nTo'lov qilsangiz hech narsa yo'qolmaydi.`

@@ -6,6 +6,8 @@ import { esc, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
 import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
+import { missingChannels, registerChannels } from "../../runtime/channels.js";
+import { log } from "../../lib/log.js";
 import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "contest";
@@ -13,22 +15,6 @@ const DEFAULT_WELCOME = "🎁 Konkursga xush kelibsiz! Ishtirok etish uchun tugm
 
 async function currentContest(botId: string) {
   return db.contest.findFirst({ where: { botId, status: "open" }, orderBy: { createdAt: "desc" } });
-}
-
-async function missingChannels(ctx: BotCtx) {
-  const channels = await db.requiredChannel.findMany({ where: { botId: ctx.botId, isActive: true } });
-  const missing: { title: string; inviteUrl: string }[] = [];
-  for (const ch of channels) {
-    try {
-      const m = await ctx.api.getChatMember(Number(ch.chatId), ctx.from!.id);
-      if (!["creator", "administrator", "member"].includes(m.status)) {
-        missing.push({ title: ch.title, inviteUrl: ch.inviteUrl });
-      }
-    } catch {
-      continue;
-    }
-  }
-  return missing;
 }
 
 export const contestTemplate: BotTemplate = {
@@ -57,7 +43,8 @@ export const contestTemplate: BotTemplate = {
         ? `🎁 <b>${esc(contest.title)}</b>\n\n` +
           (contest.prize ? `🏆 Sovrin: <b>${esc(contest.prize)}</b>\n` : "") +
           `👥 G'oliblar soni: ${contest.winnerCount}\n\n` +
-          ((ctx.settings.welcome as string) || DEFAULT_WELCOME)
+          // Owner-written text: escaped, or a stray "<" breaks /start for everyone.
+          esc((ctx.settings.welcome as string) || DEFAULT_WELCOME)
         : ctx.isAdmin
           ? "Hozircha faol konkurs yo'q. /admin → ➕ Konkurs"
           : "Hozircha faol konkurs yo'q. Kuzatib boring 🙌";
@@ -73,7 +60,7 @@ export const contestTemplate: BotTemplate = {
       if (!contest) return ctx.answerCallbackQuery({ text: "Konkurs tugagan", show_alert: true });
 
       if (contest.requireSub) {
-        const missing = await missingChannels(ctx);
+        const missing = await missingChannels(ctx, { fresh: true });
         if (missing.length > 0) {
           await ctx.answerCallbackQuery({ text: "Avval kanallarga obuna bo'ling", show_alert: true });
           const kb = new InlineKeyboard();
@@ -218,12 +205,18 @@ export const contestTemplate: BotTemplate = {
 
       await ctx.reply(announcement, { parse_mode: "HTML" });
 
-      for (const entry of entries) {
-        await sendSafe(
-          () => ctx.api.sendMessage(Number(entry.botUser.tgUserId), announcement, { parse_mode: "HTML" }),
-          { botId: ctx.botId, botUserId: entry.botUserId },
-        );
-      }
+      // Detached: telling thousands of entrants one by one must not freeze the bot.
+      const api = ctx.api;
+      const botId = ctx.botId;
+      void (async () => {
+        for (const entry of entries) {
+          await sendSafe(
+            () => api.sendMessage(Number(entry.botUser.tgUserId), announcement, { parse_mode: "HTML" }),
+            { botId, botUserId: entry.botUserId },
+          );
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      })().catch((err) => log.error("contest announcement failed", { botId, err }));
     });
 
     registerAdmin(bot, [
@@ -266,6 +259,7 @@ export const contestTemplate: BotTemplate = {
           ).catch(() => {});
         },
       },
+      registerChannels(bot),
     ]);
   },
 };

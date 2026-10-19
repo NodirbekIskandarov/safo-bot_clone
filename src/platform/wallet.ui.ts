@@ -1,30 +1,26 @@
 import { InlineKeyboard } from "grammy";
 import type { Api, Bot, Context } from "grammy";
 import { db } from "../db.js";
-import { activate } from "../billing/subscription.js";
-import { InsufficientFunds, charge, history } from "../billing/wallet.js";
-import { clearStep, getStep, setStep } from "../lib/state.js";
-import { esc, money, sendSafe } from "../lib/telegram.js";
+import { activate, premiumActive } from "../billing/subscription.js";
+import { payablePlans } from "../billing/plans.js";
+import { InsufficientFunds, KIND_LABEL, charge, history } from "../billing/wallet.js";
+import { clearStep, getStep, resetStep } from "../lib/state.js";
+import { esc, money } from "../lib/telegram.js";
 import { withEffect } from "../lib/effects.js";
 import { log } from "../lib/log.js";
 import { reloadBot, startBot } from "../runtime/registry.js";
-import { adminTgIds, paymentReference } from "./access.js";
+import { paymentReference } from "./access.js";
 import { paymentDetails } from "./settings.js";
 import { termPrice } from "./menu.js";
+import { notifyAdmins } from "./payments.js";
 
 const SCOPE = "platform";
 const TOPUP_PRESETS = [50_000, 100_000, 200_000, 500_000];
-
-const KIND_LABEL: Record<string, string> = {
-  topup: "💰 To'ldirish",
-  subscription: "📦 Obuna",
-  template: "🧩 Shablon",
-  refund: "↩️ Qaytarish",
-  bonus: "🎁 Bonus",
-};
+export const MIN_TOPUP = 5_000;
 
 export async function showWallet(ctx: Context, edit = false) {
-  const owner = await db.owner.findUniqueOrThrow({ where: { tgUserId: BigInt(ctx.from!.id) } });
+  const owner = await db.owner.findUnique({ where: { tgUserId: BigInt(ctx.from!.id) } });
+  if (!owner) return void ctx.reply("Avval /start bosing.");
   const txs = await history(owner.id, 8);
 
   const lines = txs.map((t) => {
@@ -34,10 +30,10 @@ export async function showWallet(ctx: Context, edit = false) {
   });
 
   const text =
-    `💰 <b>Balans</b>\n\n` +
+    `💳 <b>Balans</b>\n\n` +
     `Hozirgi mablag': <b>${money(owner.balanceUzs)}</b>\n\n` +
     `Balansni oldindan to'ldirib qo'yasiz, keyin tarif va shablonlarni <b>bir bosishda</b> ` +
-    `sotib olasiz — har safar chek yuborib, tasdiq kutib o'tirmaysiz.\n\n` +
+    `sotib olasiz. Avto uzaytirish ham shu balansdan ishlaydi — pul bo'lsa bot to'xtamaydi.\n\n` +
     (lines.length > 0 ? `━━━━━━━━━━━━━━\n\n<b>Oxirgi amallar</b>\n${lines.join("\n")}` : `<i>Hali amallar yo'q.</i>`);
 
   const kb = new InlineKeyboard()
@@ -50,8 +46,22 @@ export async function showWallet(ctx: Context, edit = false) {
   else await ctx.reply(text, { parse_mode: "HTML", reply_markup: kb });
 }
 
+async function showTopupMenu(ctx: Context) {
+  const kb = new InlineKeyboard();
+  TOPUP_PRESETS.forEach((amount, i) => {
+    kb.text(money(amount), `w:amt:${amount}`);
+    if (i % 2 === 1) kb.row();
+  });
+  kb.row().text("✏️ Boshqa summa", "w:custom").row().text("◀️ Balans", "w:home");
+
+  const text =
+    `➕ <b>Balansni to'ldirish</b>\n\nQancha to'ldirasiz?\n\n` +
+    `<i>To'ldirilgan mablag' yonmaydi — istagan vaqt ishlatasiz.</i>`;
+  if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+  else await ctx.reply(text, { parse_mode: "HTML", reply_markup: kb });
+}
+
 export function registerWallet(bot: Bot) {
-  bot.hears("💰 Balans", (ctx) => showWallet(ctx));
   bot.callbackQuery("w:home", async (ctx) => {
     await ctx.answerCallbackQuery();
     await showWallet(ctx, true);
@@ -59,23 +69,12 @@ export function registerWallet(bot: Bot) {
 
   bot.callbackQuery("w:top", async (ctx) => {
     await ctx.answerCallbackQuery();
-    const kb = new InlineKeyboard();
-    TOPUP_PRESETS.forEach((amount, i) => {
-      kb.text(money(amount), `w:amt:${amount}`);
-      if (i % 2 === 1) kb.row();
-    });
-    kb.row().text("✏️ Boshqa summa", "w:custom").row().text("◀️ Orqaga", "w:home");
-
-    await ctx.editMessageText(
-      `➕ <b>Balansni to'ldirish</b>\n\nQancha to'ldirasiz?\n\n` +
-        `<i>To'ldirilgan mablag' yonmaydi — istagan vaqt ishlatasiz.</i>`,
-      { parse_mode: "HTML", reply_markup: kb },
-    );
+    await showTopupMenu(ctx);
   });
 
   bot.callbackQuery("w:custom", async (ctx) => {
     await ctx.answerCallbackQuery();
-    setStep(SCOPE, ctx.from!.id, "await_topup_amount");
+    resetStep(SCOPE, ctx.from!.id, "await_topup_amount");
     await ctx.editMessageText(
       `✏️ <b>Summa</b>\n\nQancha to'ldirmoqchisiz? Faqat raqam yuboring.\n\n` +
         `<i>Masalan: 150000</i>\n\nBekor: /bekor`,
@@ -85,21 +84,25 @@ export function registerWallet(bot: Bot) {
 
   bot.callbackQuery(/^w:amt:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    await showTopupInvoice(ctx, Number(ctx.match[1]));
+    const amount = Number(ctx.match[1]);
+    if (amount < MIN_TOPUP) return;
+    await showTopupInvoice(ctx, amount);
   });
 }
+
+export { showTopupMenu };
 
 export async function showTopupInvoice(ctx: Context, amountUzs: number) {
   const details = await paymentDetails();
   if (!details.card) {
-    return void ctx
-      .editMessageText("⚠️ To'lov kartasi sozlanmagan. Administratorga murojaat qiling.", {
-        reply_markup: new InlineKeyboard().text("◀️ Orqaga", "w:home"),
-      })
-      .catch(() => {});
+    const text = "⚠️ To'lov kartasi sozlanmagan. Administratorga murojaat qiling.";
+    return void (ctx.callbackQuery
+      ? ctx.editMessageText(text, { reply_markup: new InlineKeyboard().text("◀️ Orqaga", "w:home") }).catch(() => {})
+      : ctx.reply(text));
   }
 
-  setStep(SCOPE, ctx.from!.id, "await_receipt", { topupAmount: amountUzs });
+  // Fresh state: a top-up must never inherit a subscription invoice's fields.
+  resetStep(SCOPE, ctx.from!.id, "await_receipt", { topupAmount: amountUzs });
 
   const body =
     `➕ <b>Balansni to'ldirish</b>\n\n` +
@@ -122,7 +125,7 @@ export async function showTopupInvoice(ctx: Context, amountUzs: number) {
 /** Receipt for a top-up: same review queue as everything else. */
 export async function submitTopup(ctx: Context, api: Api, fileId: string | undefined, text?: string) {
   const state = getStep(SCOPE, ctx.from!.id);
-  const amount = state?.data.topupAmount as number | undefined;
+  const amount = state?.step === "await_receipt" ? (state.data.topupAmount as number | undefined) : undefined;
   if (!amount) return false;
 
   const owner = await db.owner.findUniqueOrThrow({ where: { tgUserId: BigInt(ctx.from!.id) } });
@@ -145,49 +148,39 @@ export async function submitTopup(ctx: Context, api: Api, fileId: string | undef
   );
 
   const caption =
-    `💰 <b>Balans to'ldirish</b> <code>${payment.reference}</code>\n\n` +
+    `💰 <b>Balans to'ldirish</b> <code>${payment.reference}</code>` + (premiumActive(owner) ? " 💎" : "") + `\n\n` +
     `👤 ${esc(owner.fullName)}${owner.username ? ` (@${esc(owner.username)})` : ""}\n` +
     `🆔 <code>${owner.tgUserId}</code>\n` +
-    `💵 <b>${money(amount)}</b>`;
-  const kb = new InlineKeyboard()
-    .text("✅ Tasdiqlash", `adm:pay:ok:${payment.id}`)
-    .text("❌ Rad etish", `adm:pay:no:${payment.id}`);
-
-  for (const adminId of await adminTgIds()) {
-    await sendSafe(async () => {
-      if (fileId) await api.sendPhoto(Number(adminId), fileId, { caption, parse_mode: "HTML", reply_markup: kb });
-      else await api.sendMessage(Number(adminId), caption, { parse_mode: "HTML", reply_markup: kb });
-    });
-  }
+    `💵 <b>${money(amount)}</b>` +
+    (text ? `\n\n💬 ${esc(text)}` : "");
+  await notifyAdmins(api, payment.id, caption, fileId);
   log.info("topup submitted", { paymentId: payment.id, amount });
   return true;
 }
 
 /** Buy a subscription straight from balance — no receipt, no waiting. */
-export async function buyFromBalance(
-  ctx: Context,
-  botId: string,
-  planCode: string,
-  months: number,
-): Promise<void> {
+export async function buyFromBalance(ctx: Context, botId: string, planCode: string, months: number): Promise<void> {
   const owner = await db.owner.findUniqueOrThrow({ where: { tgUserId: BigInt(ctx.from!.id) } });
-  const plan = await db.plan.findUniqueOrThrow({ where: { code: planCode } });
-  const record = await db.bot.findUniqueOrThrow({ where: { id: botId }, include: { subscription: true } });
-  const amount = termPrice(plan.priceUzs, months, owner.isPremium);
-
-  if (!record.subscription) return void ctx.answerCallbackQuery("Obuna topilmadi");
+  const record = await db.bot.findFirst({ where: { id: botId, ownerId: owner.id }, include: { subscription: true } });
+  if (!record?.subscription) return void ctx.answerCallbackQuery("Bot topilmadi");
+  const plan = (await payablePlans(record.templateKey)).find((p) => p.code === planCode);
+  if (!plan) return void ctx.answerCallbackQuery("Bu tarif mavjud emas");
+  const amount = termPrice(plan.priceUzs, months, premiumActive(owner));
+  const subscriptionId = record.subscription.id;
 
   try {
-    const left = await charge(owner.id, amount, "subscription", {
-      note: `${plan.name} · ${months} oy · @${record.tgUsername}`,
-      refId: record.subscription.id,
+    // Charge and extend together: money must never leave without the days arriving.
+    const left = await db.$transaction(async (tx) => {
+      const rest = await charge(owner.id, amount, "subscription", {
+        note: `${plan.name} · ${months} oy · @${record.tgUsername}`,
+        refId: subscriptionId,
+      }, tx);
+      await activate(subscriptionId, plan.id, months, tx);
+      return rest;
     });
 
-    await activate(record.subscription.id, plan.id, months);
-
     if (record.status !== "active") {
-      await db.bot.update({ where: { id: botId }, data: { status: "active", lastError: null } });
-      const fresh = await db.bot.findUniqueOrThrow({ where: { id: botId } });
+      const fresh = await db.bot.update({ where: { id: botId }, data: { status: "active", lastError: null } });
       await startBot(fresh).catch((err) => log.error("restart after balance purchase failed", { err }));
     } else {
       await reloadBot(botId);
@@ -201,7 +194,7 @@ export async function buyFromBalance(
         `Yechildi: ${money(amount)}\n` +
         `Qolgan balans: <b>${money(left)}</b>\n\n` +
         `Botingiz ishlayapti. Chek yuborish shart emas edi 🙌`,
-      { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("🤖 Botlarim", "p:bots") },
+      { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Botga qaytish", `p:bot:${botId}`) },
     );
     await ctx.reply("🎉", withEffect("party")).catch(() => {});
     log.info("subscription bought from balance", { botId, planCode, months, amount });
@@ -220,7 +213,7 @@ export async function buyFromBalance(
           reply_markup: new InlineKeyboard()
             .text("➕ Balansni to'ldirish", "w:top")
             .row()
-            .text("💳 Karta orqali to'lash", `pyd:${botId}:${planCode}:${months}`),
+            .text("💳 Karta orqali to'lash", `pyc:${botId}:${planCode}:${months}`),
         },
       );
       return;

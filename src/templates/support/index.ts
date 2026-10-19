@@ -102,7 +102,7 @@ export const supportTemplate: BotTemplate = {
       const state = getStep(SCOPE, ctx.from!.id);
       if (state?.step === "replying") {
         const ticketId = state.data.ticketId as string;
-        const ticket = await db.ticket.findUnique({ where: { id: ticketId }, include: { botUser: true } });
+        const ticket = await db.ticket.findFirst({ where: { id: ticketId, botId: ctx.botId }, include: { botUser: true } });
         if (!ticket) return void clearStep(SCOPE, ctx.from!.id);
 
         const text = ctx.message.text ?? ctx.message.caption ?? "";
@@ -167,14 +167,11 @@ export const supportTemplate: BotTemplate = {
 
     bot.callbackQuery(/^sup:cl:(.+)$/, async (ctx) => {
       if (!ctx.isAdmin) return ctx.answerCallbackQuery("Ruxsat yo'q");
-      await db.ticket.update({ where: { id: ctx.match[1]! }, data: { status: "closed" } });
+      await db.ticket.updateMany({ where: { id: ctx.match[1]!, botId: ctx.botId }, data: { status: "closed" } });
       await ctx.answerCallbackQuery("Yopildi");
       await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
     });
 
-    bot.command("bekor", async (ctx) => {
-      if (ctx.isAdmin) clearStep(SCOPE, ctx.from!.id);
-    });
 
   },
 };

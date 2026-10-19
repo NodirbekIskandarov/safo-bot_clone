@@ -1,21 +1,53 @@
+import { Keyboard } from "grammy";
+
 /**
  * Reply-keyboard buttons. A wizard must never swallow one of these: tapping a
  * menu button is the user saying "get me out of here", not answering a prompt.
  */
-export const MENU_BUTTONS = [
-  "➕ Bot yaratish",
-  "🤖 Botlarim",
-  "🗣 Referal",
-  "🪪 Shaxsiy kabinet",
-  "📱 Ilova",
-  "💵 Hisob to'ldirish",
-  "✉️ Murojaat",
-  "📘 Qo'llanma",
-  "💳 Tariflar",
-] as const;
+export const BTN = {
+  create: "➕ Bot yaratish",
+  bots: "🤖 Botlarim",
+  income: "💼 Daromad",
+  cabinet: "📱 Shaxsiy kabinet",
+  topup: "💳 Hisob to'ldirish",
+  referral: "🗣 Referal",
+  site: "🌐 Saytga kirish",
+  help: "📚 Qo'llanma",
+  support: "✉️ Murojaat",
+  panel: "🛠 Boshqaruv paneli",
+} as const;
+
+/**
+ * Labels from earlier releases. Telegram keeps a user's old reply keyboard
+ * until we send a new one, so these must keep working.
+ */
+export const LEGACY = {
+  cabinet: ["🪪 Shaxsiy kabinet"],
+  topup: ["💵 Hisob to'ldirish", "💰 Balans"],
+  help: ["📘 Qo'llanma", "❓ Yordam"],
+  site: ["📱 Ilova"],
+  tariffs: ["💳 Tariflar"],
+} as const;
+
+export const MENU_BUTTONS: readonly string[] = [
+  ...Object.values(BTN),
+  ...Object.values(LEGACY).flat(),
+];
 
 export function isMenuButton(text: string): boolean {
-  return (MENU_BUTTONS as readonly string[]).includes(text.trim());
+  return MENU_BUTTONS.includes(text.trim());
+}
+
+/** The persistent keyboard, mirrored on the reference layout; admins get the panel row. */
+export function mainKeyboard(isAdmin: boolean): Keyboard {
+  const kb = new Keyboard()
+    .text(BTN.create).text(BTN.bots).row()
+    .text(BTN.income).text(BTN.cabinet).row()
+    .text(BTN.topup).text(BTN.referral).row()
+    .text(BTN.site).text(BTN.help).row()
+    .text(BTN.support);
+  if (isAdmin) kb.row().text(BTN.panel);
+  return kb.resized().persistent();
 }
 
 /** Duration options offered at checkout. Longer terms trade margin for cash up front. */

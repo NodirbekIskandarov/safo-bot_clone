@@ -1,11 +1,12 @@
 import { InlineKeyboard } from "grammy";
 import { db } from "../db.js";
 import { createBroadcast, runBroadcast } from "../jobs/broadcast.js";
-import { clearStep, getStep, setStep } from "../lib/state.js";
+import { clearAll, clearStep, getStep, setStep } from "../lib/state.js";
 import { esc } from "../lib/telegram.js";
+import { log } from "../lib/log.js";
 import { accessFor } from "../billing/subscription.js";
 import { config } from "../config.js";
-import { ADMIN_BUTTON, isReservedLabel } from "./keyboard.js";
+import { ADMIN_BUTTON, isReservedLabel, mainKeyboard } from "./keyboard.js";
 import { templates } from "../templates/index.js";
 import type { AppBot, BotCtx } from "./context.js";
 
@@ -160,36 +161,44 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
   });
 
   bot.callbackQuery(/^adm:bcgo:(.+)$/, async (ctx) => {
-    if (!ctx.isAdmin) return;
-    await ctx.answerCallbackQuery("Yuborish boshlandi");
+    if (!ctx.isAdmin) return void ctx.answerCallbackQuery();
     const state = getStep(SCOPE, ctx.from!.id);
     clearStep(SCOPE, ctx.from!.id);
     const messageId = Number(ctx.match[1]);
     const fromChatId = state?.data.fromChatId as number | undefined;
-    if (!fromChatId) return;
+    if (!fromChatId) return void ctx.answerCallbackQuery("Xabar topilmadi, qaytadan boshlang");
+    await ctx.answerCallbackQuery("Yuborish boshlandi");
 
     const { id, total } = await createBroadcast(ctx.botId, BigInt(ctx.from!.id), { fromChatId, messageId });
     await ctx.editMessageText(`📤 Yuborilmoqda… 0/${total}`).catch(() => {});
 
     const statusMsg = ctx.callbackQuery.message;
+    const api = ctx.api;
+    const adminChat = ctx.chat!.id;
     let lastShown = 0;
-    const result = await runBroadcast(ctx.botId ? id : id, ctx.api, (sent, failed) => {
+
+    // Run detached: updates of one bot are handled one at a time, so awaiting
+    // here froze the whole bot for every user until the last message went out.
+    void runBroadcast(id, api, (sent, failed) => {
       const done = sent + failed;
       if (done - lastShown >= 25 && statusMsg) {
         lastShown = done;
-        void ctx.api
+        void api
           .editMessageText(statusMsg.chat.id, statusMsg.message_id, `📤 Yuborilmoqda… ${done}/${total}`)
           .catch(() => {});
       }
-    });
-
-    await ctx.reply(
-      `✅ <b>Yuborish tugadi</b>\n\n` +
-        `📨 Yetkazildi: <b>${result.sent}</b>\n` +
-        `🚫 Bloklagan: <b>${result.blocked}</b>\n` +
-        `⚠️ Xato: <b>${result.failed}</b>`,
-      { parse_mode: "HTML" },
-    );
+    })
+      .then((result) =>
+        api.sendMessage(
+          adminChat,
+          `✅ <b>Yuborish tugadi</b>\n\n` +
+            `📨 Yetkazildi: <b>${result.sent}</b>\n` +
+            `🚫 Bloklagan: <b>${result.blocked}</b>\n` +
+            `⚠️ Xato: <b>${result.failed}</b>`,
+          { parse_mode: "HTML" },
+        ),
+      )
+      .catch((err) => log.error("broadcast failed", { botId: ctx.botId, err }));
   });
 
   bot.callbackQuery("adm:bccancel", async (ctx) => {
@@ -198,10 +207,13 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
     await ctx.editMessageText("Bekor qilindi.").catch(() => {});
   });
 
+  // The one /bekor of a tenant bot. It must clear every wizard of every scope:
+  // a per-template handler registered later never ran, so an admin who
+  // cancelled a reply still sent their next message to the customer.
   bot.command("bekor", async (ctx) => {
-    if (!ctx.isAdmin) return;
-    clearStep(SCOPE, ctx.from!.id);
-    await ctx.reply("Bekor qilindi.");
+    clearAll(ctx.from!.id, ["shop_cart"]);
+    const rows = templates[ctx.templateKey]?.menuButtons ?? [];
+    await ctx.reply("Bekor qilindi.", { reply_markup: await mainKeyboard(ctx, rows) });
   });
 
   // Capture the composed broadcast message. Runs before template handlers so a
@@ -213,6 +225,7 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
     // A menu tap means "leave this wizard", not "broadcast this text".
     const rows = templates[ctx.templateKey]?.menuButtons ?? [];
     const label = ctx.message.text ?? "";
+    if (label.startsWith("/")) return next();
     if (label && isReservedLabel(label, rows)) {
       clearStep(SCOPE, ctx.from!.id);
       return next();

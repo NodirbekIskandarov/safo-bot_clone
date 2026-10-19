@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { log } from "../lib/log.js";
@@ -9,7 +10,8 @@ import { balanceOf, history } from "../billing/wallet.js";
 import { accessFor } from "../billing/subscription.js";
 import { verifyInitData, type TgUser } from "./auth.js";
 
-const PUBLIC_DIR = new URL("../../public/", import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: the latter is "/F:/..." on Windows and never resolves.
+const PUBLIC_DIR = fileURLToPath(new URL("../../public/", import.meta.url));
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -38,13 +40,18 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** Resolve the caller from initData, against the platform bot or one of its tenants. */
+/**
+ * Resolve the caller from initData. The Mini App opens from two places: inside
+ * a tenant bot (/admin → Ilova), signed with that bot's token, and from the
+ * platform bot (bot card → Statistika), signed with the platform token. Both
+ * are valid; /api/bot then checks the caller owns or administers the bot.
+ */
 async function authenticate(initData: string, botId?: string): Promise<{ user: TgUser; botId?: string } | null> {
   if (botId) {
     const record = await db.bot.findUnique({ where: { id: botId } });
     if (!record) return null;
     const token = open({ cipher: record.tokenCipher, iv: record.tokenIv, tag: record.tokenTag });
-    const user = verifyInitData(initData, token);
+    const user = verifyInitData(initData, token) ?? verifyInitData(initData, config.PLATFORM_BOT_TOKEN);
     return user ? { user, botId } : null;
   }
   const user = verifyInitData(initData, config.PLATFORM_BOT_TOKEN);
@@ -55,7 +62,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, path: string
   if (req.method !== "POST") return json(res, 405, { ok: false, error: "method" });
 
   const raw = await readBody(req);
-  const body = JSON.parse(raw || "{}") as { initData?: string; botId?: string };
+  let body: { initData?: string; botId?: string };
+  try {
+    body = JSON.parse(raw || "{}") as { initData?: string; botId?: string };
+  } catch {
+    return json(res, 400, { ok: false, error: "json" });
+  }
   const auth = await authenticate(body.initData ?? "", body.botId);
   if (!auth) return json(res, 401, { ok: false, error: "auth" });
 

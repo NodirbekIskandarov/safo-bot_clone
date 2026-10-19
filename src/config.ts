@@ -16,6 +16,9 @@ const schema = z.object({
   // runs in a container and must reach this process on the host.
   WEB_HOST: z.string().default("127.0.0.1"),
   WEB_APP_URL: z.string().default(""),
+  // Bookings, "today" counters and daily limits are wall-clock: they must use
+  // the customers' time zone, not whatever the server was installed with.
+  TZ: z.string().default("Asia/Tashkent"),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -25,6 +28,9 @@ if (!parsed.success) {
   console.error("");
   process.exit(1);
 }
+
+// Node re-reads TZ on assignment, so every Date after this line is local time.
+process.env.TZ = parsed.data.TZ;
 
 export const config = {
   ...parsed.data,
