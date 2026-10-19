@@ -16,7 +16,7 @@ import { registerPaymentReview, showCardInvoice, showInvoice, showPlansFor, show
 import { BTN, LEGACY, isMenuButton, mainKeyboard, TERMS, termPrice } from "./menu.js";
 import { PLAN_COPY, perUser, recommend } from "./plancopy.js";
 import { TEMPLATE_COPY } from "./templatecopy.js";
-import { MIN_TOPUP, buyFromBalance, registerWallet, showTopupInvoice, showTopupMenu, showWallet, submitTopup } from "./wallet.ui.js";
+import { MAX_TOPUP, MIN_TOPUP, buyFromBalance, registerWallet, showTopupInvoice, showTopupMenu, showWallet, submitTopup } from "./wallet.ui.js";
 import { askSupport, registerCabinet, showCabinet, showIncome, showReferral, takeSupportMessage } from "./cabinet.js";
 import { handleBotCardPhoto, handleBotCardText, registerBotCard, showBotCard } from "./botcard.js";
 import { withEffect } from "../lib/effects.js";
@@ -741,9 +741,11 @@ export function createPlatformBot(botUsername: string): Bot {
     }
 
     if (state.step === "await_topup_amount") {
-      const amount = Number(text.replace(/\D/g, ""));
-      if (!amount || amount < MIN_TOPUP) {
-        return void ctx.reply(`Summa noto'g'ri. Kamida ${money(MIN_TOPUP)}, faqat raqam yuboring.`);
+      const amount = /^[\d\s]+$/.test(text) ? Number(text.replace(/\s/g, "")) : NaN;
+      if (!Number.isSafeInteger(amount) || amount < MIN_TOPUP || amount > MAX_TOPUP) {
+        return void ctx.reply(
+          `Summa noto'g'ri. ${money(MIN_TOPUP)} dan ${money(MAX_TOPUP)} gacha, faqat raqam yuboring.`,
+        );
       }
       await showTopupInvoice(ctx, amount);
       return;

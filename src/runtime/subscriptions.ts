@@ -201,12 +201,12 @@ export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
     }
     if (state.step === "p_price") {
       const price = Number(text.replace(/\D/g, ""));
-      if (!price) return void ctx.reply("Narx noto'g'ri.");
+      if (!price || price > 2_000_000_000) return void ctx.reply("Narx noto'g'ri.");
       setStep(ADMIN, ctx.from!.id, "p_days", { priceUzs: price });
       return void ctx.reply("3-qadam: necha kunga? (masalan 30)");
     }
     if (state.step === "p_days") {
-      const days = Number(text.replace(/\D/g, "")) || 30;
+      const days = Math.min(Number(text.replace(/\D/g, "")) || 30, 3650);
       const count = await db.botPlan.count({ where: { botId: ctx.botId } });
       await db.botPlan.create({
         data: {

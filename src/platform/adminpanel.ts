@@ -607,7 +607,13 @@ export function registerPlatformAdmin(bot: Bot) {
     if (!(await isAdmin(BigInt(ctx.from.id)))) return next();
 
     const actor = BigInt(ctx.from.id);
-    const digitsOnly = (s: string) => (/^\s*\d[\d\s]*$/.test(s) ? Number(s.replace(/\s/g, "")) : null);
+    // Every amount ends up in an INT column: refuse anything that would not fit.
+    const INT_MAX = 2_000_000_000;
+    const digitsOnly = (s: string) => {
+      if (!/^\s*\d[\d\s]*$/.test(s)) return null;
+      const n = Number(s.replace(/\s/g, ""));
+      return Number.isSafeInteger(n) && n <= INT_MAX ? n : null;
+    };
 
     switch (state.step) {
       case "await_admin_add": {
@@ -712,7 +718,7 @@ export function registerPlatformAdmin(bot: Bot) {
         const parts = text.split(/\s+/);
         const tgId = parts[0]?.replace(/\D/g, "");
         const amount = Number(parts[1]?.replace(/[^\d-]/g, ""));
-        if (!tgId || !Number.isInteger(amount) || amount === 0) {
+        if (!tgId || !Number.isInteger(amount) || amount === 0 || Math.abs(amount) > INT_MAX) {
           return void ctx.reply("Format: <code>123456789 50000</code>", { parse_mode: "HTML" });
         }
         const target = await db.owner.findUnique({ where: { tgUserId: BigInt(tgId) } });

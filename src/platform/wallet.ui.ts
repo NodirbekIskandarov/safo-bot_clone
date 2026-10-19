@@ -17,6 +17,11 @@ import { notifyAdmins } from "./payments.js";
 const SCOPE = "platform";
 const TOPUP_PRESETS = [50_000, 100_000, 200_000, 500_000];
 export const MIN_TOPUP = 5_000;
+/**
+ * Upper bound for one top-up. Without it a typed 900 000 000 000 000 was
+ * stored, overflowed the INT column, and broke the admin payments list.
+ */
+export const MAX_TOPUP = 50_000_000;
 
 export async function showWallet(ctx: Context, edit = false) {
   const owner = await db.owner.findUnique({ where: { tgUserId: BigInt(ctx.from!.id) } });
@@ -85,7 +90,7 @@ export function registerWallet(bot: Bot) {
   bot.callbackQuery(/^w:amt:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const amount = Number(ctx.match[1]);
-    if (amount < MIN_TOPUP) return;
+    if (amount < MIN_TOPUP || amount > MAX_TOPUP) return;
     await showTopupInvoice(ctx, amount);
   });
 }

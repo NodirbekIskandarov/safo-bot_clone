@@ -387,7 +387,7 @@ export const shopTemplate: BotTemplate = {
 
         if (admin?.step === "await_prod_price") {
           const price = Number(text.replace(/\D/g, ""));
-          if (!price) return ctx.reply("Narx noto'g'ri. Faqat raqam yuboring, masalan 45000");
+          if (!price || price > 2_000_000_000) return ctx.reply("Narx noto'g'ri. Faqat raqam yuboring, masalan 45000");
           const categories = await db.category.findMany({
             where: { botId: ctx.botId, isActive: true }, orderBy: { sortOrder: "asc" },
           });
