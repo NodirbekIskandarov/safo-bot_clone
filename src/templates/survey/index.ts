@@ -87,6 +87,13 @@ async function finish(ctx: BotCtx, surveyId: string) {
   await ctx.reply("✅ Rahmat! Javoblaringiz qabul qilindi.", { reply_markup: { remove_keyboard: true } });
 }
 
+function surveyListKeyboard(multiple: boolean): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(`🔁 Qayta to'ldirish: ${multiple ? "✅ mumkin" : "❌ bir marta"}`, "sv:multi")
+    .row()
+    .text("◀️ Orqaga", "adm:menu");
+}
+
 function toCsv(rows: Record<string, string>[]): string {
   if (rows.length === 0) return "";
   const headers = [...new Set(rows.flatMap((r) => Object.keys(r)))];
@@ -110,6 +117,7 @@ export const surveyTemplate: BotTemplate = {
     "Savollar ro'yxatini tuzasiz, foydalanuvchi bosqichma-bosqich javob beradi. Barcha javoblarni " +
     "istalgan vaqt CSV fayl qilib yuklab olasiz — Excel'da ochiladi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["📝 Anketani to'ldirish"]],
+  commandAliases: { anketa: "📝 Anketani to'ldirish" },
 
   commands: [
     { command: "start", description: "Boshlash" },
@@ -245,7 +253,7 @@ export const surveyTemplate: BotTemplate = {
           );
           await ctx.editMessageText(
             `📃 <b>Savollar</b>\n\n${lines.join("\n") || "Hali savol yo'q."}\n\nHammasini o'chirish: /tozala`,
-            { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
+            { parse_mode: "HTML", reply_markup: surveyListKeyboard(survey?.multiple ?? false) },
           ).catch(() => {});
         },
       },
@@ -285,10 +293,28 @@ export const surveyTemplate: BotTemplate = {
 
     bot.command("tozala", async (ctx) => {
       if (!ctx.isAdmin) return;
+      await ctx.reply("Barcha savollar o'chirilsinmi? Javoblar saqlanib qoladi.", {
+        reply_markup: new InlineKeyboard().text("🗑 Ha, o'chir", "sv:wipeyes").text("◀️ Yo'q", "adm:menu"),
+      });
+    });
+
+    bot.callbackQuery("sv:wipeyes", async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
       const survey = await activeSurvey(ctx.botId);
-      if (!survey) return;
-      await db.surveyQuestion.deleteMany({ where: { surveyId: survey.id } });
-      await ctx.reply("🗑 Barcha savollar o'chirildi.");
+      if (survey) await db.surveyQuestion.deleteMany({ where: { surveyId: survey.id } });
+      await ctx.answerCallbackQuery("O'chirildi");
+      await ctx.editMessageText("🗑 Barcha savollar o'chirildi.", {
+        reply_markup: new InlineKeyboard().text("◀️ Panel", "adm:menu"),
+      }).catch(() => {});
+    });
+
+    bot.callbackQuery("sv:multi", async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      const survey = await activeSurvey(ctx.botId);
+      if (!survey) return ctx.answerCallbackQuery("Avval savol qo'shing");
+      await db.survey.update({ where: { id: survey.id }, data: { multiple: !survey.multiple } });
+      await ctx.answerCallbackQuery(survey.multiple ? "Bir marta to'ldiriladi" : "Qayta to'ldirish mumkin");
+      await ctx.editMessageReplyMarkup({ reply_markup: surveyListKeyboard(!survey.multiple) }).catch(() => {});
     });
   },
 };

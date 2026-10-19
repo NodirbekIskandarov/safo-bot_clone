@@ -1,7 +1,7 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
-import { esc, sendSafe } from "../../lib/telegram.js";
+import { esc, parsePhone, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
 import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
@@ -62,6 +62,7 @@ export const bookingTemplate: BotTemplate = {
     "Sartaroshxona, klinika, avtoyuvish, ustaxona uchun. Mijoz xizmat turini, kunni va soatni " +
     "tanlaydi, telefonini qoldiradi. Sizga xabar keladi, bir tugmada tasdiqlaysiz. Band vaqtlar ko'rinmaydi.",
   defaultSettings: { welcome: DEFAULT_WELCOME, services: DEFAULT_SERVICES },  menuButtons: [["📅 Navbat olish", "🗓 Mening navbatlarim"]],
+  commandAliases: { navbat: "📅 Navbat olish", mening: "🗓 Mening navbatlarim" },
 
   commands: [
     { command: "start", description: "Boshlash" },
@@ -230,7 +231,11 @@ export const bookingTemplate: BotTemplate = {
       const text = ctx.message.text.trim();
       if (text.startsWith("/")) return next();
 
-      if (state?.step === "phone") return createBooking(ctx, text);
+      if (state?.step === "phone") {
+        const phone = parsePhone(text);
+        if (!phone) return ctx.reply("📞 Telefon raqami noto'g'ri. Masalan: +998 90 123 45 67 — yoki tugmani bosing.");
+        return createBooking(ctx, phone);
+      }
 
       if (ctx.isAdmin) {
         const admin = getStep(`${SCOPE}_admin`, ctx.from!.id);

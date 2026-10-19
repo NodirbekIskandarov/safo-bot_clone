@@ -10,6 +10,14 @@ export function esc(s: string | undefined | null): string {
   return (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** A typed phone number, normalised; null when it cannot be one. */
+export function parsePhone(text: string): string | null {
+  const digits = text.replace(/\D/g, "");
+  if (digits.length < 9 || digits.length > 15) return null;
+  // 9 digits is a local Uzbek number typed without the country code.
+  return digits.length === 9 ? `+998${digits}` : `+${digits}`;
+}
+
 export function money(uzs: number): string {
   return uzs.toLocaleString("ru-RU").replace(/,/g, " ") + " so'm";
 }

@@ -88,6 +88,7 @@ model BotUser {
   languageCode String?
   status       String   @default("active")  // active | blocked_by_user | banned | unsubscribed
   isAdmin      Boolean  @default(false)
+  cart         String?                       // JSON shop cart, survives restarts
   joinedAt     DateTime @default(now())
   lastSeenAt   DateTime @default(now())
 

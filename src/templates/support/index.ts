@@ -36,6 +36,7 @@ export const supportTemplate: BotTemplate = {
     "Mijoz botga savol yozadi, sizga darhol keladi. Javobingiz mijozga qaytadi — u sizning " +
     "shaxsiy raqamingizni bilmaydi. Har bir murojaat tiket raqami bilan saqlanadi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["✍️ Murojaat yuborish"], ["📋 Murojaatlarim"]],
+  commandAliases: { murojaat: "✍️ Murojaat yuborish", murojaatlarim: "📋 Murojaatlarim" },
 
   commands: [
     { command: "start", description: "Boshlash" },

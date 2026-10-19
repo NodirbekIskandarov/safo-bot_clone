@@ -170,6 +170,7 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
     await ctx.answerCallbackQuery("Yuborish boshlandi");
 
     const { id, total } = await createBroadcast(ctx.botId, BigInt(ctx.from!.id), { fromChatId, messageId });
+    const rate = (await accessFor(ctx.botId))?.features.broadcastRatePerSec;
     await ctx.editMessageText(`📤 Yuborilmoqda… 0/${total}`).catch(() => {});
 
     const statusMsg = ctx.callbackQuery.message;
@@ -187,7 +188,7 @@ export function registerAdmin(bot: AppBot, extra: AdminItem[] = []) {
           .editMessageText(statusMsg.chat.id, statusMsg.message_id, `📤 Yuborilmoqda… ${done}/${total}`)
           .catch(() => {});
       }
-    })
+    }, rate)
       .then((result) =>
         api.sendMessage(
           adminChat,

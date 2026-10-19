@@ -1,4 +1,4 @@
-import { Bot as GrammyBot } from "grammy";
+import { Bot as GrammyBot, InlineKeyboard } from "grammy";
 import type { Bot as BotRecord } from "@prisma/client";
 import { db } from "../db.js";
 import { open } from "../lib/crypto.js";
@@ -7,6 +7,18 @@ import { withStateNamespace } from "../lib/state.js";
 import { templates } from "../templates/index.js";
 import { accessFor } from "../billing/subscription.js";
 import type { AppBot, BotCtx } from "./context.js";
+import { activeSubscription } from "./subscriptions.js";
+import { SUB_BUTTON, applyCommandAlias } from "./keyboard.js";
+
+/** What a non-subscriber may still do in a subscribers-only bot: start, see plans, pay. */
+async function mayPassPaywall(ctx: BotCtx): Promise<boolean> {
+  const data = ctx.callbackQuery?.data;
+  if (data) return data.startsWith("bs:");
+  const text = ctx.message?.text?.trim();
+  if (text) return /^\/(start|obuna|bekor)\b/.test(text) || text === SUB_BUTTON;
+  // receipts and other media go to the payment flow, which checks its own state
+  return Boolean(ctx.message?.photo);
+}
 
 interface Entry {
   bot: AppBot;
@@ -64,7 +76,6 @@ export async function startBot(record: BotRecord): Promise<void> {
     // so the owner has a concrete reason to upgrade.
     const known = await db.botUser.findUnique({
       where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
-      select: { id: true, status: true },
     });
     if (!known && !ctx.isAdmin) {
       const access = await accessFor(record.id);
@@ -88,24 +99,50 @@ export async function startBot(record: BotRecord): Promise<void> {
       existing && (existing.status === "blocked_by_user" || existing.status === "banned" ||
         (existing.status === "unsubscribed" && isStart));
 
-    ctx.appUser = await db.botUser.upsert({
-      where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
-      create: {
-        botId: record.id,
-        tgUserId: BigInt(from.id),
-        username: from.username ?? null,
-        firstName: from.first_name,
-        languageCode: from.language_code ?? null,
-        isAdmin: ctx.isAdmin,
-      },
-      update: {
-        username: from.username ?? null,
-        firstName: from.first_name,
-        lastSeenAt: new Date(),
-        isAdmin: ctx.isAdmin,
-        ...(revive ? { status: "active" } : {}),
-      },
-    });
+    // Writing on every single message was the busiest query of a popular bot.
+    // Only touch the row when something changed or lastSeenAt is stale.
+    const stale = !existing || Date.now() - existing.lastSeenAt.getTime() > 10 * 60 * 1000;
+    const changed =
+      !existing || existing.username !== (from.username ?? null) || existing.firstName !== from.first_name ||
+      existing.isAdmin !== ctx.isAdmin || revive;
+
+    ctx.appUser =
+      existing && !stale && !changed
+        ? existing
+        : await db.botUser.upsert({
+            where: { botId_tgUserId: { botId: record.id, tgUserId: BigInt(from.id) } },
+            create: {
+              botId: record.id,
+              tgUserId: BigInt(from.id),
+              username: from.username ?? null,
+              firstName: from.first_name,
+              languageCode: from.language_code ?? null,
+              isAdmin: ctx.isAdmin,
+            },
+            update: {
+              username: from.username ?? null,
+              firstName: from.first_name,
+              lastSeenAt: new Date(),
+              isAdmin: ctx.isAdmin,
+              ...(revive ? { status: "active" } : {}),
+            },
+          });
+
+    applyCommandAlias(ctx, template.commandAliases);
+
+    // "Subscribers only" mode: content is for people with an active plan.
+    if (!ctx.isAdmin && settings.subsOnly === true && !(await mayPassPaywall(ctx))) {
+      const plans = await db.botPlan.count({ where: { botId: record.id, isActive: true } });
+      if (plans > 0 && !(await activeSubscription(record.id, ctx.appUser.id))) {
+        if (ctx.callbackQuery) await ctx.answerCallbackQuery().catch(() => {});
+        await ctx
+          .reply("🔒 Bu bot faqat obunachilar uchun. Obuna bo'lib, barcha imkoniyatlardan foydalaning.", {
+            reply_markup: new InlineKeyboard().text("💎 Obuna bo'lish", "bs:list"),
+          })
+          .catch(() => {});
+        return;
+      }
+    }
 
     // Wizards of this bot live in their own namespace (see lib/state.ts).
     await withStateNamespace(record.id, () => next());

@@ -45,7 +45,7 @@ export const broadcastTemplate: BotTemplate = {
           await ctx.editMessageText(
             `✏️ <b>Salomlashuv matni</b>\n\nHozirgi matn:\n\n<i>${esc(
               (ctx.settings.welcome as string) || DEFAULT_WELCOME,
-            )}</i>\n\nO'zgartirish uchun platforma botidagi «Sozlamalar» bo'limidan foydalaning.`,
+            )}</i>\n\nO'zgartirish: platforma boti → «🤖 Botlarim» → botingiz → «⚙️ Sozlash».`,
             { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
           ).catch(() => {});
         },

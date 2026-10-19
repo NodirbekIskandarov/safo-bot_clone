@@ -644,6 +644,13 @@ export function registerPlatformAdmin(bot: Bot) {
         const tgId = BigInt(id);
         if (isRootAdmin(tgId)) return void ctx.reply("❌ Asosiy adminni (.env dagi) bot orqali olib bo'lmaydi.");
         await db.owner.updateMany({ where: { tgUserId: tgId }, data: { isPlatformAdmin: false } });
+        // Staff bots were opened with a ten-year period. Without this cap a
+        // removed admin would keep every bot free for a decade.
+        const soon = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+        await db.subscription.updateMany({
+          where: { owner: { tgUserId: tgId }, currentPeriodEnd: { gt: soon } },
+          data: { currentPeriodEnd: soon },
+        });
         clearStep(SCOPE, ctx.from.id);
         await audit(actor, "admin.remove", id);
         return void ctx.reply(`✅ <code>${id}</code> adminlikdan olindi.`, { parse_mode: "HTML" });
@@ -723,6 +730,10 @@ export function registerPlatformAdmin(bot: Bot) {
         }
         const target = await db.owner.findUnique({ where: { tgUserId: BigInt(tgId) } });
         if (!target) return void ctx.reply("Bunday foydalanuvchi topilmadi (u botga /start bosganmi?).");
+        // Two-person rule for money: an added admin cannot credit themselves.
+        if (target.tgUserId === actor && !isRootAdmin(actor)) {
+          return void ctx.reply("❌ O'z balansingizni o'zingiz o'zgartira olmaysiz. Boshqa admin qilsin.");
+        }
 
         let left: number;
         try {

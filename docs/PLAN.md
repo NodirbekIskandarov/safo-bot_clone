@@ -1,5 +1,9 @@
 # BotPlatform — Phase 0: Reja
 
+> ⚠️ **Tarixiy hujjat.** Bu dastlabki reja (monorepo, Fastify, Postgres, Redis, webhook). Haqiqiy kod
+> boshqa yo'l bilan qurilgan: bitta Node jarayoni, SQLite, long polling, Telegram ichidagi panel.
+> Joriy arxitektura va imkoniyatlar uchun [README.md](../README.md) ga qarang.
+
 > Holat: **Phase 0 (reja)**. Kod yozilmagan. Bu hujjat tasdiqlangandan keyin Phase 1 boshlanadi.
 > Manba: `botplatform-claude-code-prompt.md` (2 va 17-bo'limlar qat'iy).
 > **Oxirgi yangilanish: 2026-08-29** — owner qarorlari bo'yicha sxema yangilandi (§0 ga qarang).

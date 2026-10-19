@@ -26,6 +26,7 @@ export const contestTemplate: BotTemplate = {
     "Foydalanuvchilar tugma bosib ishtirok etadi, har biriga bilet raqami beriladi. Kanalga majburiy " +
     "obuna qo'ysangiz — avval obuna bo'lishadi. G'olib tasodifiy tanlanadi va hammaga e'lon qilinadi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["🎯 Ishtirok etish"], ["🏆 Natijalar"]],
+  commandAliases: { ishtirok: "🎯 Ishtirok etish", natijalar: "🏆 Natijalar" },
 
   commands: [
     { command: "start", description: "Boshlash" },

@@ -32,6 +32,8 @@ export interface BotTemplate {
   commands: { command: string; description: string }[];
   /** Persistent reply-keyboard rows shown to every user of the created bot. */
   menuButtons: string[][];
+  /** Menu commands that do exactly what a keyboard button does: { katalog: "🛍 Katalog" }. */
+  commandAliases?: Record<string, string>;
   /** Register all handlers for a tenant bot running this template. */
   register(ctx: TemplateContext): void;
 }

@@ -29,3 +29,21 @@ export function isReservedLabel(text: string, rows: string[][]): boolean {
   const flat = [...rows.flat(), ADMIN_BUTTON, SUB_BUTTON];
   return flat.includes(text.trim());
 }
+
+/**
+ * Menu commands are aliases of keyboard buttons: rewrite "/katalog" into
+ * "🛍 Katalog" so the one button handler serves both. They were advertised in
+ * the Menu but had no handler, so tapping them did nothing.
+ */
+export function applyCommandAlias(
+  ctx: { message?: { text?: string; entities?: unknown } },
+  aliases: Record<string, string> | undefined,
+): void {
+  const msg = ctx.message;
+  if (!aliases || !msg?.text?.startsWith("/")) return;
+  const cmd = msg.text.slice(1).split(/[\s@]/)[0] ?? "";
+  const label = aliases[cmd];
+  if (!label) return;
+  msg.text = label;
+  delete msg.entities;
+}

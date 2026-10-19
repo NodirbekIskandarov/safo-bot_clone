@@ -136,7 +136,8 @@ async function showSettings(ctx: Context, record: BotRecord) {
   const kb = new InlineKeyboard()
     .text("✏️ Salomlashuv matni", `bc:wel:${record.id}`).row()
     .text(`👥 Adminlar (${admins.length})`, `bc:adm:${record.id}`).row()
-    .text("💳 Obuna uchun karta", `bc:card:${record.id}`).row();
+    .text("💳 Obuna uchun karta", `bc:card:${record.id}`).row()
+    .text(`🔒 Faqat obunachilar uchun: ${settings.subsOnly ? "✅" : "❌"}`, `bc:subs:${record.id}`).row();
 
   if (record.templateKey === "booking") {
     const services = Array.isArray(settings.services) ? (settings.services as string[]) : [];
@@ -154,7 +155,10 @@ async function showSettings(ctx: Context, record: BotRecord) {
       `✏️ Salomlashuv: <i>${esc(welcome)}</i>\n` +
       `👥 Adminlar: ${admins.map((a) => `<code>${a}</code>`).join(", ")}\n` +
       `💳 Karta: ${card ? `<code>${esc(card)}</code>` : "<i>sozlanmagan</i>"}\n` +
+      `🔒 Faqat obunachilar: ${settings.subsOnly ? "yoqilgan" : "o'chirilgan"}\n` +
       extra +
+      `\n<i>«Faqat obunachilar uchun» yoqilsa, botingizdagi pullik obunani (/admin → 💎 Obunalar) ` +
+      `olmaganlar faqat /start va obuna sahifasini ko'radi.</i>\n` +
       `\n<i>O'zgarishlar botda darhol kuchga kiradi — qayta ishga tushirish shart emas.</i>`,
     kb,
   );
@@ -423,6 +427,24 @@ export function registerBotCard(bot: Bot) {
     await ctx.answerCallbackQuery();
     await ask(ctx, r, "await_welcome", `bc:set:${r.id}`);
   });
+  withBot(/^bc:subs:(.+)$/, async (ctx, r) => {
+    const current = JSON.parse(r.settings || "{}") as Record<string, unknown>;
+    const next = !current.subsOnly;
+    if (next) {
+      const plans = await db.botPlan.count({ where: { botId: r.id, isActive: true } });
+      const hasCard = Boolean(current.payCard);
+      if (plans === 0 || !hasCard) {
+        return void ctx.answerCallbackQuery({
+          text: "Avval obuna kartasini kiriting va botingizda /admin → 💎 Obunalar orqali kamida bitta tarif qo'shing.",
+          show_alert: true,
+        });
+      }
+    }
+    await patchSettings(r.id, { subsOnly: next ? true : null });
+    await ctx.answerCallbackQuery(next ? "Yoqildi" : "O'chirildi");
+    await showSettings(ctx, await db.bot.findUniqueOrThrow({ where: { id: r.id } }));
+  });
+
   withBot(/^bc:card:(.+)$/, async (ctx, r) => {
     await ctx.answerCallbackQuery();
     await ask(ctx, r, "await_tenant_card", `bc:set:${r.id}`);

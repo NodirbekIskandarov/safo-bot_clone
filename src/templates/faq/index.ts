@@ -5,7 +5,7 @@ import { esc } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
 import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
-import type { BotTemplate, TemplateContext } from "../../runtime/context.js";
+import type { BotCtx, BotTemplate, TemplateContext } from "../../runtime/context.js";
 
 const SCOPE = "faq";
 const DEFAULT_WELCOME =
@@ -20,6 +20,7 @@ export const faqTemplate: BotTemplate = {
     "Savol va javoblar ro'yxatini kiritasiz. Mijoz savol yozsa bot kalit so'zlar bo'yicha mos " +
     "javobni topib beradi. Topolmasa — ro'yxatni ko'rsatadi. Xodimning vaqtini tejaydi.",
   defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["📋 Barcha savollar"], ["✍️ Savol berish"]],
+  commandAliases: { savollar: "📋 Barcha savollar" },
 
   commands: [
     { command: "start", description: "Boshlash" },
@@ -82,19 +83,7 @@ bot.hears("📋 Barcha savollar", async (ctx) => {
       {
         id: "faq_list",
         label: "📃 Ro'yxat",
-        handler: async (ctx) => {
-          const items = await db.faqItem.findMany({
-            where: { botId: ctx.botId },
-            orderBy: { hits: "desc" },
-            take: 20,
-          });
-          const lines = items.map((i, n) => `${n + 1}. ${esc(i.question)} — 👁 ${i.hits}`);
-          await ctx.editMessageText(
-            `📃 <b>Savollar: ${items.length}</b>\n\n${lines.join("\n") || "Hali yo'q."}\n\n` +
-              `Hammasini o'chirish: /tozala`,
-            { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("◀️ Orqaga", "adm:menu") },
-          ).catch(() => {});
-        },
+        handler: (ctx) => faqAdminList(ctx),
       },
     ]);
 
@@ -151,10 +140,46 @@ bot.hears("📋 Barcha savollar", async (ctx) => {
     });
 
 
+    async function faqAdminList(ctx: BotCtx) {
+      const items = await db.faqItem.findMany({ where: { botId: ctx.botId }, orderBy: { hits: "desc" }, take: 20 });
+      const kb = new InlineKeyboard();
+      for (const i of items) kb.text(`🗑 ${i.question.slice(0, 40)}`, `faq:del:${i.id}`).row();
+      if (items.length > 1) kb.text("🗑 Hammasini o'chirish", "faq:wipe").row();
+      kb.text("◀️ Orqaga", "adm:menu");
+      const lines = items.map((i, n) => `${n + 1}. ${esc(i.question)} — 👁 ${i.hits}`);
+      await ctx.editMessageText(
+        `📃 <b>Savollar: ${items.length}</b>\n\n${lines.join("\n") || "Hali yo'q."}\n\n<i>O'chirish uchun savolni bosing.</i>`,
+        { parse_mode: "HTML", reply_markup: kb },
+      ).catch(() => {});
+    }
+
+    bot.callbackQuery(/^faq:del:(.+)$/, async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      await db.faqItem.deleteMany({ where: { id: ctx.match[1]!, botId: ctx.botId } });
+      await ctx.answerCallbackQuery("O'chirildi");
+      await faqAdminList(ctx);
+    });
+
+    const askWipe = async (ctx: BotCtx) => {
+      const kb = new InlineKeyboard().text("🗑 Ha, hammasini o'chir", "faq:wipeyes").text("◀️ Yo'q", "adm:menu");
+      if (ctx.callbackQuery) await ctx.editMessageText("Barcha savol-javoblar o'chirilsinmi? Bu qaytarilmaydi.", { reply_markup: kb }).catch(() => {});
+      else await ctx.reply("Barcha savol-javoblar o'chirilsinmi? Bu qaytarilmaydi.", { reply_markup: kb });
+    };
+    bot.callbackQuery("faq:wipe", async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
+      await ctx.answerCallbackQuery();
+      await askWipe(ctx);
+    });
     bot.command("tozala", async (ctx) => {
-      if (!ctx.isAdmin) return;
+      if (ctx.isAdmin) await askWipe(ctx);
+    });
+    bot.callbackQuery("faq:wipeyes", async (ctx) => {
+      if (!ctx.isAdmin) return ctx.answerCallbackQuery();
       await db.faqItem.deleteMany({ where: { botId: ctx.botId } });
-      await ctx.reply("🗑 Barcha savollar o'chirildi.");
+      await ctx.answerCallbackQuery("O'chirildi");
+      await ctx.editMessageText("🗑 Barcha savollar o'chirildi.", {
+        reply_markup: new InlineKeyboard().text("◀️ Panel", "adm:menu"),
+      }).catch(() => {});
     });
   },
 };

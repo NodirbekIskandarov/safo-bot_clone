@@ -1,7 +1,7 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 import { db } from "../../db.js";
 import { clearStep, getStep, setStep } from "../../lib/state.js";
-import { esc, money, sendSafe } from "../../lib/telegram.js";
+import { esc, money, parsePhone, sendSafe } from "../../lib/telegram.js";
 import { registerAdmin } from "../../runtime/admin.js";
 import { mainKeyboard } from "../../runtime/keyboard.js";
 import { registerBotSubscriptions } from "../../runtime/subscriptions.js";
@@ -19,13 +19,36 @@ interface CartLine {
   qty: number;
 }
 
+/**
+ * The cart lives in memory for speed and in the database for durability: a
+ * restart or a 30-minute pause used to empty everyone's cart silently.
+ */
 function cartOf(ctx: BotCtx): CartLine[] {
   const state = getStep(CART, ctx.from!.id);
-  return (state?.data.lines as CartLine[] | undefined) ?? [];
+  if (state) return (state.data.lines as CartLine[] | undefined) ?? [];
+  if (ctx.appUser.cart) {
+    try {
+      const lines = JSON.parse(ctx.appUser.cart) as CartLine[];
+      setStep(CART, ctx.from!.id, "active", { lines });
+      return lines;
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
-function saveCart(ctx: BotCtx, lines: CartLine[]) {
+async function saveCart(ctx: BotCtx, lines: CartLine[]) {
   setStep(CART, ctx.from!.id, "active", { lines });
+  const cart = lines.length > 0 ? JSON.stringify(lines) : null;
+  ctx.appUser.cart = cart;
+  await db.botUser.update({ where: { id: ctx.appUser.id }, data: { cart } }).catch(() => {});
+}
+
+async function clearCart(ctx: BotCtx) {
+  clearStep(CART, ctx.from!.id);
+  ctx.appUser.cart = null;
+  await db.botUser.update({ where: { id: ctx.appUser.id }, data: { cart: null } }).catch(() => {});
 }
 
 function cartTotal(lines: CartLine[]): number {
@@ -165,6 +188,7 @@ export const shopTemplate: BotTemplate = {
     "Mahsulotlarni bot orqali qo'shasiz (rasm, narx, tavsif). Mijoz katalogdan tanlab savatga soladi, " +
     "telefon raqamini qoldiradi va buyurtma beradi. Sizga darhol xabar keladi — bir tugmada tasdiqlaysiz.",
   defaultSettings: { welcome: DEFAULT_WELCOME },  menuButtons: [["🛍 Katalog", "🧺 Savat"], ["📦 Buyurtmalarim"]],
+  commandAliases: { katalog: "🛍 Katalog", savat: "🧺 Savat", buyurtmalarim: "📦 Buyurtmalarim" },
 
   commands: [
     { command: "start", description: "Boshlash" },
@@ -266,9 +290,9 @@ export const shopTemplate: BotTemplate = {
       const existing = lines.find((l) => l.productId === product.id);
       if (existing) existing.qty += 1;
       else lines.push({ productId: product.id, title: product.title, priceUzs: product.priceUzs, qty: 1 });
-      saveCart(ctx, lines);
+      await saveCart(ctx, lines);
 
-      await ctx.answerCallbackQuery(`🧺 Savatga qo'shildi (${cartOf(ctx).length} ta)`);
+      await ctx.answerCallbackQuery(`🧺 Savatga qo'shildi (${lines.length} ta)`);
     });
 
     bot.callbackQuery(/^sh:(inc|dec):(.+)$/, async (ctx) => {
@@ -278,14 +302,14 @@ export const shopTemplate: BotTemplate = {
       if (line) {
         line.qty += op === "inc" ? 1 : -1;
         if (line.qty <= 0) lines = lines.filter((l) => l.productId !== productId);
-        saveCart(ctx, lines);
+        await saveCart(ctx, lines);
       }
       await ctx.answerCallbackQuery();
       await showCart(ctx, true);
     });
 
     bot.callbackQuery("sh:clear", async (ctx) => {
-      clearStep(CART, ctx.from!.id);
+      await clearCart(ctx);
       await ctx.answerCallbackQuery("Savat tozalandi");
       await ctx.editMessageText("🧺 Savat bo'sh.").catch(() => {});
     });
@@ -317,7 +341,9 @@ export const shopTemplate: BotTemplate = {
 
       // ---- customer checkout steps
       if (state?.step === "await_phone") {
-        setStep(SCOPE, ctx.from!.id, "await_delivery", { phone: text });
+        const phone = parsePhone(text);
+        if (!phone) return ctx.reply("📞 Telefon raqami noto'g'ri. Masalan: +998 90 123 45 67 — yoki tugmani bosing.");
+        setStep(SCOPE, ctx.from!.id, "await_delivery", { phone });
         return ctx.reply("🚚 Yetkazib berish kerakmi?", {
           reply_markup: new Keyboard().text("🚚 Yetkazib berish").text("🏪 Olib ketaman").resized().oneTime(),
         });
@@ -514,7 +540,7 @@ export const shopTemplate: BotTemplate = {
       });
 
       clearStep(SCOPE, ctx.from!.id);
-      clearStep(CART, ctx.from!.id);
+      await clearCart(ctx);
 
       const where =
         order.deliveryType === "delivery"

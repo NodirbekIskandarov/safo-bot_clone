@@ -48,12 +48,15 @@ export async function runBroadcast(
   broadcastId: string,
   api: Api,
   onProgress?: (sent: number, failed: number, total: number) => void,
+  ratePerSec?: number,
 ): Promise<{ sent: number; failed: number; blocked: number }> {
   const broadcast = await db.broadcast.findUnique({ where: { id: broadcastId } });
   if (!broadcast) throw new Error("Broadcast topilmadi");
 
   const source = JSON.parse(broadcast.content) as BroadcastSource;
-  const gapMs = Math.ceil(1000 / config.BROADCAST_RATE_PER_SEC);
+  // The plan's rate, never above the platform ceiling (Telegram allows ~30/s).
+  const rate = Math.max(1, Math.min(ratePerSec ?? config.BROADCAST_RATE_PER_SEC, config.BROADCAST_RATE_PER_SEC));
+  const gapMs = Math.ceil(1000 / rate);
 
   let sent = 0;
   let failed = 0;

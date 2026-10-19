@@ -29,5 +29,6 @@ export async function audit(actorTgId: bigint, action: string, target?: string, 
 }
 
 export function paymentReference(): string {
-  return `BX-${randomBytes(3).toString("hex").toUpperCase()}`;
+  // 4 bytes: 3 gave 16 M codes, close enough to collide on a busy month.
+  return `BX-${randomBytes(4).toString("hex").toUpperCase()}`;
 }

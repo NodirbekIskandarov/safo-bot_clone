@@ -11,6 +11,8 @@ import { payablePlans, seedPlans } from "./billing/plans.js";
 import { accessFor, activate, billingTick, openSubscription } from "./billing/subscription.js";
 import { TERMS, termPrice } from "./platform/menu.js";
 import { dailyPrice } from "./billing/plans.js";
+import { applyCommandAlias } from "./runtime/keyboard.js";
+import { parsePhone } from "./lib/telegram.js";
 import { clearAll, getStep, resetStep, setStep, withStateNamespace } from "./lib/state.js";
 
 let failures = 0;
@@ -281,6 +283,24 @@ console.log("\n🧠 Holat (wizard) izolyatsiyasi");
   const kept = await withStateNamespace("bot-a", async () => getStep("shop_cart", user));
   check("/bekor savatni saqlaydi", kept !== undefined);
   check("/bekor platformadagi holatga tegmaydi", getStep("platform", user) !== undefined);
+}
+
+console.log("\n📋 Menyu buyruqlari");
+for (const t of templateList) {
+  const declared = t.commands.map((c) => c.command).filter((c) => !["start", "bekor", "stop"].includes(c));
+  const labels = t.menuButtons.flat();
+  const missing = declared.filter((c) => !t.commandAliases?.[c] || !labels.includes(t.commandAliases[c]!));
+  check(`${t.emoji} ${t.key}: har bir buyruq tugmaga bog'langan`, missing.length === 0, missing.join(", "));
+}
+{
+  const ctx = { message: { text: "/katalog@my_bot", entities: [{}] as unknown } };
+  applyCommandAlias(ctx, { katalog: "🛍 Katalog" });
+  check("/katalog tugma matniga aylanadi", ctx.message.text === "🛍 Katalog" && !("entities" in ctx.message));
+  const other = { message: { text: "/start", entities: [{}] as unknown } };
+  applyCommandAlias(other, { katalog: "🛍 Katalog" });
+  check("boshqa buyruqlarga tegilmaydi", other.message.text === "/start" && "entities" in other.message);
+  check("telefon: 9 xonali raqamga +998 qo'shiladi", parsePhone("90 123 45 67") === "+998901234567");
+  check("telefon: harf rad etiladi", parsePhone("salom") === null);
 }
 
 {

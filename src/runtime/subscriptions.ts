@@ -70,6 +70,10 @@ async function showPlans(ctx: BotCtx) {
  */
 export function registerBotSubscriptions(bot: AppBot): AdminItem[] {
   bot.command("obuna", (ctx) => showPlans(ctx));
+  bot.callbackQuery("bs:list", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showPlans(ctx);
+  });
   bot.hears("💎 Obuna", (ctx) => showPlans(ctx));
 
   bot.callbackQuery(/^bs:buy:(.+)$/, async (ctx) => {
