@@ -237,6 +237,9 @@ export async function startAll(): Promise<void> {
   // park a paying customer's bot until they notice and press start.
   const records = await db.bot.findMany({ where: { status: { in: ["active", "error"] } } });
   for (const record of records) {
+    // A revoked token (401) stays revoked until the owner sends a new one;
+    // retrying it on every boot only fills the log.
+    if (record.status === "error" && /401|Unauthorized/i.test(record.lastError ?? "")) continue;
     // A lapsed subscription must not come back to life on restart.
     const access = await accessFor(record.id);
     if (access && !access.live) {
